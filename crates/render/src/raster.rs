@@ -78,6 +78,10 @@ pub fn render(list: &DisplayList, view: &View, o: &RasterOptions) -> Option<Pixm
     let mut pm = Pixmap::new(view.width, view.height)?;
     pm.fill(tiny_skia::Color::from_rgba8(o.background.0, o.background.1, o.background.2, 255));
     let vis = view.world_bounds();
+    // Raster images sit under the line work.
+    for im in &list.images {
+        crate::image_layer::draw(&mut pm, im, view, o.antialias);
+    }
     for p in &list.prims {
         let c = p.display_rgb(o.background);
         let mut paint = Paint::default();

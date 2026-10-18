@@ -11,6 +11,7 @@ pub mod clip;
 mod dim;
 mod fill;
 mod hatch;
+pub mod image_layer;
 mod linetype;
 mod linetype_text;
 mod mline;
@@ -33,6 +34,7 @@ use pen::Pen;
 pub use dim::{ArrowGeom, Arrowhead, DimGeometry, DimText, LineRole, arrowhead, dimension_geometry, dimension_geometry_with, format_linear_value};
 pub use fill::triangulate_evenodd;
 pub use hatch::{fill_loops as hatch_fill_loops, pattern_swatch};
+pub use image_layer::ImagePlacement;
 pub use paper::{PAPER_SIZES, PaperSize, Sheet, paper_size, sheet};
 pub use tolerance::{gdt_points, tolerance_in};
 
@@ -98,6 +100,8 @@ pub struct DisplayList {
     /// Plot style end, join and fill style per primitive (parallel to `prims`; missing entries
     /// are "use object"), turned into geometry by [`pen::apply`].
     pub pens: Vec<Pen>,
+    /// Raster images (IMAGE entities), drawn under the line work by the rasteriser.
+    pub images: Vec<ImagePlacement>,
 }
 
 /// A glyph of plotted text: the font glyph and, in world coordinates, where it sits. It is
@@ -1191,9 +1195,42 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             let o = i.insert.xy();
             let u = i.u.xy() * i.size.x;
             let v = i.v.xy() * i.size.y;
-            b.polyline(ctx, rgb, lw, &[o, o + u, o + u + v, o + v, o]);
-            b.polyline(ctx, rgb, lw, &[o, o + u + v]);
-            b.polyline(ctx, rgb, lw, &[o + u, o + v]);
+            // The picture itself (display flag 1: show the image) is drawn from the placement.
+            let shown = i.display & 1 != 0 && image_layer::available(&i.path);
+            if shown {
+                // Clip boundary: pixel coordinates (origin top-left, y down) to world; a
+                // rectangle is two opposite corners.
+                let to_world = |p: Vec2| o + i.u.xy() * p.x + i.v.xy() * (i.size.y - p.y);
+                let clip: Vec<Vec2> = match (i.clipping, i.clip.as_slice()) {
+                    (true, [a, c]) => [*a, Vec2::new(c.x, a.y), *c, Vec2::new(a.x, c.y)].into_iter().map(to_world).collect(),
+                    (true, pts) if pts.len() >= 3 => pts.iter().copied().map(to_world).collect(),
+                    _ => Vec::new(),
+                };
+                b.list.images.push(ImagePlacement {
+                    handle: ctx.top,
+                    path: i.path.clone(),
+                    origin: ctx.xf.apply(o),
+                    u: ctx.xf.apply_vec(i.u.xy()),
+                    v: ctx.xf.apply_vec(i.v.xy()),
+                    size: i.size,
+                    clip: clip.into_iter().map(|p| ctx.xf.apply(p)).collect(),
+                    alpha: if i.fade > 0 { alpha(i.fade.min(90)) } else { 255 },
+                });
+            }
+            // IMAGEFRAME: 0 no frame, 1 frame, 2 frame on screen but not in plots.
+            let frame = match ctx.d.header.i64("IMAGEFRAME", 1) {
+                0 => false,
+                2 => !b.plotting,
+                _ => true,
+            };
+            if frame || !shown {
+                b.polyline(ctx, rgb, lw, &[o, o + u, o + u + v, o + v, o]);
+            }
+            if !shown && i.display & 1 != 0 {
+                // The file is missing: cross the frame as a placeholder.
+                b.polyline(ctx, rgb, lw, &[o, o + u + v]);
+                b.polyline(ctx, rgb, lw, &[o + u, o + v]);
+            }
         }
         EntityKind::Table(t) => table(b, ctx, t, rgb, lw),
         EntityKind::Tolerance(t) => tolerance::draw(b, ctx, e, t, lw, tol),
