@@ -121,6 +121,53 @@ pub(crate) fn load(path: &str) -> Option<Arc<Pixmap>> {
     }
 }
 
+/// A change stamp of the image file (0 when it can't be read, and on the web).
+pub fn file_stamp(path: &str) -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        stamp(path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        0
+    }
+}
+
+/// The image at `path` for a GPU texture: premultiplied RGBA8 `(width, height, pixels)`, shrunk
+/// by block averaging until neither side exceeds `max_side`. `None` when it can't be read.
+pub fn display_rgba(path: &str, max_side: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let img = load(path)?;
+    let (w, h) = (img.width(), img.height());
+    let step = w.max(h).div_ceil(max_side.max(1)).max(1);
+    if step == 1 {
+        return Some((w, h, img.data().to_vec()));
+    }
+    let (nw, nh) = (w.div_ceil(step), h.div_ceil(step));
+    let src = img.data();
+    let mut out = Vec::with_capacity((nw as usize).saturating_mul(nh as usize).saturating_mul(4));
+    for oy in 0..nh {
+        for ox in 0..nw {
+            let mut sum = [0u32; 4];
+            let mut n = 0u32;
+            for y in (oy * step)..((oy + 1) * step).min(h) {
+                for x in (ox * step)..((ox + 1) * step).min(w) {
+                    let i = (y as usize * w as usize + x as usize) * 4;
+                    if let Some(px) = src.get(i..i + 4) {
+                        for (acc, v) in sum.iter_mut().zip(px) {
+                            *acc += u32::from(*v);
+                        }
+                        n += 1;
+                    }
+                }
+            }
+            let n = n.max(1);
+            out.extend(sum.iter().map(|v| u8::try_from(v / n).unwrap_or(u8::MAX)));
+        }
+    }
+    Some((nw, nh, out))
+}
+
 /// Draw one image onto `pm` under `view`.
 pub(crate) fn draw(pm: &mut Pixmap, im: &ImagePlacement, view: &View, antialias: bool) {
     let corners = im.corners();

@@ -502,6 +502,7 @@ fn draw_vp_content(c: &mut VpContent, gpu: bool, p: &egui::Painter, f: &VpFrame,
         draw_list(p, xf, &c.list, bg, lwdisplay);
         return;
     }
+    crate::images::draw(p, xf, &c.list);
     let mut stencil = crate::gpu::Stencil::Off;
     if let Some(outline) = &f.outline {
         draw_vp_mask(c, p, outline, xf_paper);
@@ -737,6 +738,7 @@ fn clip_infinite(xf: &Xf, base: Vec2, dir: Vec2, ray: bool) -> Option<[Pos2; 2]>
 
 /// Draw a display list.
 pub(crate) fn draw_list(p: &egui::Painter, xf: &Xf, list: &DisplayList, bg: Rgb, lwdisplay: bool) {
+    crate::images::draw(p, xf, list);
     let vis = xf.world_bounds();
     let mut shapes: Vec<Shape> = Vec::with_capacity(list.prims.len());
     let px = 1.0 / xf.scale;
@@ -931,6 +933,7 @@ fn list_mesh_key(key: &ListKey, list_gen: u64, origin: Vec2, bg: Rgb, lwdisplay:
 /// the infinite lines, which are clipped to the view on the CPU every frame.
 fn draw_list_gpu(c: &mut CanvasState, p: &egui::Painter, xf: &Xf, bg: Rgb, lwdisplay: bool) {
     let Some(list) = &c.list else { return };
+    crate::images::draw(p, xf, list);
     let origin = crate::gpu::choose_origin(&list.bounds, xf.center, f64::from(xf.rect.height()) / xf.scale.max(1e-300));
     let key = list_mesh_key(&c.key, c.list_gen, origin, bg, lwdisplay);
     if c.mesh_key != Some(key) {
