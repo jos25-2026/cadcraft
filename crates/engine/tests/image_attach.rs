@@ -94,3 +94,15 @@ fn bad_input_is_an_error_and_changes_nothing() {
     assert_eq!(s.doc().unwrap().model.iter().count(), n);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn prompt_asks_for_the_path_and_places_the_image() {
+    let d = dir("prompt");
+    let img = png(&d, "typed.png", 8, 6);
+    let mut s = Session::new();
+    s.start("imageattach").unwrap();
+    // A path pasted from Explorer arrives in quotes.
+    s.input(cadcraft_engine::Input::Text(format!("\"{img}\""))).unwrap();
+    assert_eq!(only_image(&s).size.x, 8.0);
+    let _ = std::fs::remove_dir_all(&d);
+}

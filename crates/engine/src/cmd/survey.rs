@@ -11,7 +11,7 @@ use cadcraft_geom::Vec3;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::{Result, Session};
+use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 /// Most points imported by one command (hostile or mistaken files).
 const MAX_POINTS: usize = 500_000;
@@ -25,10 +25,57 @@ const MAX_COORD: f64 = 1.0e12;
 const MAX_REPORTED_SKIPS: usize = 10;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![CommandSpec::new("importpoints", "Import Survey Points", run_import).alias(&["ptimport", "importsurvey"]).params(
-        "{path | text, format?: \"PNEZD\" (letters P N E Z D, X, Y), textHeight?: 1, decimals?: 2, \
+    vec![
+        CommandSpec::new("importpoints", "Import Survey Points", run_import)
+            .alias(&["ptimport", "importsurvey"])
+            .params(
+                "{path | text, format?: \"PNEZD\" (letters P N E Z D, X, Y), textHeight?: 1, decimals?: 2, \
                  layerPrefix?: \"SURVEY\", showNumber?: true, showElevation?: true, showDescription?: true, symbol?: true}",
-    )]
+            )
+            .interactive(|_| Ok(Box::new(ImportM::default()))),
+    ]
+}
+
+/// Asks for the point file, then the column order, then imports it.
+#[derive(Default)]
+struct ImportM {
+    path: Option<String>,
+}
+
+impl Interactive for ImportM {
+    fn name(&self) -> &'static str {
+        "IMPORTPOINTS"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match &self.path {
+            None => Prompt::new("Enter the point file path (CSV or TXT)", Accept::TEXT),
+            Some(_) => {
+                let mut p = Prompt::new("Column order (P number, N north, E east, Z elevation, D description)", Accept::TEXT);
+                p.default = Some("PNEZD".to_string());
+                p
+            }
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        let text = match i {
+            Input::Text(t) => t.trim().trim_matches('"').to_string(),
+            Input::Enter if self.path.is_some() => String::new(),
+            _ => return Ok(Step::Done),
+        };
+        let Some(path) = self.path.clone() else {
+            if text.is_empty() {
+                return Ok(Step::Done);
+            }
+            self.path = Some(text);
+            return Ok(Step::Continue);
+        };
+        let format = if text.is_empty() { "PNEZD".to_string() } else { text };
+        let r = run_import(s, &json!({ "path": path, "format": format }))?;
+        if let Some(m) = r.get("message").and_then(Value::as_str) {
+            s.echo(m.to_string());
+        }
+        Ok(Step::Done)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

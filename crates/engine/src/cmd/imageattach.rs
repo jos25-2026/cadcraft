@@ -8,17 +8,43 @@ use cadcraft_geom::{Vec2, Vec3};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::{Result, Session};
+use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 /// Largest image side accepted, in pixels (a corrupt header can claim anything).
 const MAX_SIDE: u32 = 1 << 20;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![CommandSpec::new("imageattach", "Attach Raster Image", run_attach).alias(&["iat"]).params(
-        "{path, insert?: [x,y], scale?: drawing units per pixel (default 1), rotation?: degrees, \
+    vec![
+        CommandSpec::new("imageattach", "Attach Raster Image", run_attach)
+            .alias(&["iat"])
+            .params(
+                "{path, insert?: [x,y], scale?: drawing units per pixel (default 1), rotation?: degrees, \
                  worldFile?: path | false (default: the file beside the image)}. A world file sets position, \
                  scale and rotation unless `insert` or `scale` is given.",
-    )]
+            )
+            .interactive(|_| Ok(Box::new(AttachM))),
+    ]
+}
+
+/// Asks for the image file, then places it as the JSON form does (world file beside it, if any).
+struct AttachM;
+
+impl Interactive for AttachM {
+    fn name(&self) -> &'static str {
+        "IMAGEATTACH"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        Prompt::new("Enter the image file path (PNG, JPEG or TIFF; a world file beside it sets the position)", Accept::TEXT)
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        let Input::Text(t) = i else { return Ok(Step::Done) };
+        let t = t.trim().trim_matches('"');
+        if t.is_empty() {
+            return Ok(Step::Done);
+        }
+        run_attach(s, &json!({ "path": t }))?;
+        Ok(Step::Done)
+    }
 }
 
 /// The six numbers of a world file: x pixel size A, rotation D, rotation B, y pixel size E
