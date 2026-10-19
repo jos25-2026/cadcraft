@@ -26,6 +26,7 @@ pub mod hatchdlg;
 mod images;
 mod mtext_editor;
 pub mod spacemouse;
+pub mod surveydlg;
 // The External References palette.
 pub mod xrefs;
 

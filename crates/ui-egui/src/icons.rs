@@ -51,6 +51,10 @@ pub enum Icon {
     Region,
     Wipeout,
     Contour,
+    Earthwork,
+    MapGrid,
+    NorthArrow,
+    ImportPoints,
     Table,
     Text,
     MText,
@@ -464,6 +468,31 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             pen.poly(&[(3.0, 17.0), (8.0, 9.0), (15.0, 8.0), (21.0, 14.0)], false, a);
             pen.poly(&[(6.0, 19.0), (10.0, 13.0), (15.0, 12.5), (19.0, 17.0)], false, b);
             pen.fill_c(12.0, 6.0, 1.5, a);
+        }
+        Earthwork => {
+            pen.poly(&[(3.0, 14.0), (9.0, 8.0), (15.0, 15.0), (21.0, 9.0)], false, a);
+            pen.l(3.0, 12.0, 21.0, 12.0);
+            pen.poly(&[(3.0, 14.0), (3.0, 20.0), (21.0, 20.0), (21.0, 9.0)], false, b);
+            pen.fill_c(9.0, 8.0, 1.5, a);
+        }
+        MapGrid => {
+            pen.la(9.0, 3.0, 9.0, 21.0);
+            pen.la(15.0, 3.0, 15.0, 21.0);
+            pen.la(3.0, 9.0, 21.0, 9.0);
+            pen.la(3.0, 15.0, 21.0, 15.0);
+            pen.rect(3.0, 3.0, 18.0, 18.0, b);
+        }
+        NorthArrow => {
+            pen.c(12.0, 13.0, 8.0, b);
+            pen.tri([(12.0, 4.0), (8.5, 14.0), (15.5, 14.0)], a);
+            pen.l(12.0, 14.0, 12.0, 21.0);
+        }
+        ImportPoints => {
+            for (x, y) in [(6.0, 7.0), (12.0, 5.0), (17.0, 9.0), (8.0, 12.0)] {
+                pen.fill_c(x, y, 1.6, a);
+            }
+            pen.l(14.0, 13.0, 14.0, 21.0);
+            pen.poly(&[(10.0, 17.0), (14.0, 21.0), (18.0, 17.0)], false, b);
         }
         Wipeout => {
             pen.rect(3.0, 3.0, 13.0, 13.0, b);

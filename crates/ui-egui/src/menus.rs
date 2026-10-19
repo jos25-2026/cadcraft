@@ -165,14 +165,7 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             return Some(r);
         }
         // Browse for a survey point file (CSV/TXT, columns P N E Z D) and draw its points.
-        "ui.importpoints" if no_path => {
-            let Some(path) = app.services.pick_file.as_ref().and_then(|f| f("points")) else { return Some(Ok(Value::Null)) };
-            let r = app.session.execute("importpoints", &json!({ "path": path })).map_err(|e| e.to_string());
-            if r.is_ok() {
-                let _ = app.session.execute("zoom.extents", &Value::Null);
-            }
-            return Some(r);
-        }
+        "ui.importpoints" if no_path => return run_ui_command(app, "importpoints", &Value::Null),
         // Pick a template (.dwt or .dxf) and start a new drawing from it.
         "ui.newtemplate" => {
             if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
@@ -410,6 +403,23 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         // Typed or from an icon (no parameters): the Contours dialog; JSON calls run the command.
         "contour" | "contours" | "createcontours" if params.is_null() && app.session.state().is_ok() => {
             app.ui.dialog = Some("contour".into());
+            Ok(Value::Null)
+        }
+        // Typed or from an icon (no parameters): the survey dialogs; JSON calls run the command.
+        "importpoints" | "ptimport" | "importsurvey" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("importpoints".into());
+            Ok(Value::Null)
+        }
+        "earthwork" | "cutfill" | "volume" | "volumes" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("earthwork".into());
+            Ok(Value::Null)
+        }
+        "mapgrid" | "gridlines" | "coordgrid" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("mapgrid".into());
+            Ok(Value::Null)
+        }
+        "northarrow" | "northsymbol" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("northarrow".into());
             Ok(Value::Null)
         }
         "dsettings" | "ds" | "se" if params.is_null() => {
