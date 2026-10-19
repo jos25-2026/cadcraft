@@ -33,7 +33,16 @@ pub struct CmdLine {
     pub option_rows: Vec<(Rect, String)>,
     /// Where the Dynamic Input tooltip stays while the options menu is open.
     pub options_anchor: Option<Pos2>,
+    /// How many log lines there were last frame, and when (egui time, seconds) the log last grew.
+    seen_log_len: usize,
+    log_changed_at: f64,
+    /// The history lines have faded: nothing new for `FADE_SECS` and the pointer is not on them.
+    lines_faded: bool,
 }
+
+/// The history lines above the bar stay this long after the last message, then fade away
+/// (F2 or a click on the bar's chevron opens the full history).
+const FADE_SECS: f64 = 7.0;
 
 /// The most history lines the command line shows above its bar.
 pub const MAX_LINES: usize = 12;
@@ -248,6 +257,13 @@ pub struct KeyPress {
 }
 
 /// Handle keyboard input destined for the command line (when no text field has focus).
+/// Characters that belong in the command line: not control, zero-width/direction marks or
+/// private-use characters (input methods send those when the language is switched).
+fn typable(c: char) -> bool {
+    !c.is_control()
+        && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{E000}'..='\u{F8FF}')
+}
+
 pub fn keyboard(app: &mut CadApp, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() {
         return;
@@ -258,6 +274,11 @@ pub fn keyboard(app: &mut CadApp, ctx: &egui::Context) {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let text_prompt = app.session.current_prompt().is_some_and(|p| p.accept.text && !p.accept.point && !p.accept.number);
     options_still_fit(app);
+    // The key that switches the input language (the one under Esc, ` or ~) is not typing: some
+    // layouts send a stray character with it.
+    let lang_toggle = events.iter().any(|e| {
+        matches!(e, egui::Event::Key { pressed: true, physical_key: Some(Key::Backtick), modifiers, .. } if !modifiers.ctrl && !modifiers.command)
+    });
     for ev in events {
         // The options menu takes the arrows, Enter and Escape; typing closes it.
         if app.cmd.options.is_some() {
@@ -296,8 +317,8 @@ pub fn keyboard(app: &mut CadApp, ctx: &egui::Context) {
                     tab(app);
                 } else if t == " " && !text_prompt {
                     submit(app);
-                } else {
-                    app.cmd.buffer.push_str(&t);
+                } else if !lang_toggle {
+                    app.cmd.buffer.extend(t.chars().filter(|c| typable(*c)));
                 }
             }
             egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => match key {
@@ -391,8 +412,34 @@ pub fn submit(app: &mut CadApp) {
 }
 
 fn visible_lines(app: &CadApp, canvas: Rect, bar: Rect) -> usize {
+    if app.cmd.lines_faded {
+        return 0;
+    }
     let available = ((bar.top() - canvas.top() - 8.0).max(0.0) / LINE_H) as usize;
     app.ui.history_lines.min(MAX_LINES).min(available)
+}
+
+/// Hide the history lines a few seconds after the last message so they stop covering the
+/// drawing; new messages, typing and the pointer resting on the lines bring them back.
+fn fade_lines(app: &mut CadApp, ui: &egui::Ui, canvas: Rect, bar: Rect) {
+    let now = ui.input(|i| i.time);
+    let len = app.session.log.len();
+    if len != app.cmd.seen_log_len || !app.cmd.buffer.is_empty() || app.session.prompting() {
+        app.cmd.seen_log_len = len;
+        app.cmd.log_changed_at = now;
+    }
+    app.cmd.lines_faded = false;
+    let hover = {
+        let n = visible_lines(app, canvas, bar).min(app.session.log.len());
+        let lines = Rect::from_min_size(pos2(bar.left(), bar.top() - LINE_H * n as f32 - 4.0), vec2(bar.width(), LINE_H * n as f32 + 2.0));
+        ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| lines.contains(p))
+    };
+    let left = FADE_SECS - (now - app.cmd.log_changed_at);
+    if left <= 0.0 && !hover {
+        app.cmd.lines_faded = true;
+    } else if left > 0.0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left.min(FADE_SECS) + 0.05));
+    }
 }
 
 pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
@@ -401,6 +448,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui, canvas: Rect) {
     let h = 24.0;
     let bar = Rect::from_min_size(pos2(canvas.center().x - w / 2.0, canvas.bottom() - h - 10.0), vec2(w, h));
     let p = ui.painter_at(canvas);
+    fade_lines(app, ui, canvas, bar);
     history(app, ui, canvas, bar);
     // History lines above the bar (the expanded window replaces them).
     let n = if app.cmd.expanded { 0 } else { visible_lines(app, canvas, bar) };
@@ -730,6 +778,12 @@ mod tests {
         assert!(!app.cmd.expanded, "a drag isn't a click");
         assert!(app.session.pending_window.is_none());
         assert_eq!(app.run("ui.cmdline.lines", serde_json::json!({"lines": 99})), Ok(serde_json::json!({"lines": MAX_LINES})));
+    }
+    #[test]
+    fn invisible_and_private_use_characters_are_not_typed() {
+        assert!("line_-0.5@1<45".chars().all(typable), "everything a command needs");
+        assert!("\u{200B}\u{200E}\u{feff}\u{e000}\u{7}".chars().all(|c| !typable(c)));
+        assert!(typable('ก'), "Thai text still types (for text prompts)");
     }
 }
 
