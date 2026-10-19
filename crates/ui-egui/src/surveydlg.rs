@@ -587,6 +587,132 @@ pub fn trees(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
     );
 }
 
+// ---- Cross Sections ----
+
+#[derive(Clone)]
+struct XsForm {
+    name: String,
+    interval: String,
+    left: String,
+    right: String,
+    vscale: String,
+    columns: u32,
+    grid: bool,
+    grid_every: String,
+    draw: bool,
+}
+
+impl Default for XsForm {
+    fn default() -> Self {
+        XsForm {
+            name: String::new(),
+            interval: String::new(),
+            left: String::new(),
+            right: String::new(),
+            vscale: String::new(),
+            columns: 3,
+            grid: true,
+            grid_every: String::new(),
+            draw: false,
+        }
+    }
+}
+
+/// The names of the centerlines in the drawing (the layers `CL-<name>`).
+fn centerline_names(app: &CadApp) -> Vec<String> {
+    let Ok(d) = app.session.doc() else { return Vec::new() };
+    let mut v: Vec<String> =
+        d.layers.iter().filter_map(|l| l.name.get(..3).filter(|p| p.eq_ignore_ascii_case("CL-")).map(|_| l.name[3..].to_string())).collect();
+    v.sort();
+    v
+}
+
+fn xs_params(f: &XsForm) -> Result<Value, String> {
+    if f.name.is_empty() {
+        return Err(crate::tl!("Choose a centerline, or draw one first.").to_string());
+    }
+    let mut m = Map::new();
+    m.insert("name".into(), json!(f.name));
+    for (key, text, field) in [
+        ("interval", &f.interval, "Section interval"),
+        ("leftWidth", &f.left, "Width left"),
+        ("rightWidth", &f.right, "Width right"),
+        ("vScale", &f.vscale, "Vertical exaggeration"),
+    ] {
+        put(&mut m, key, text, field, positive).map_err(bad_field)?;
+    }
+    m.insert("columns".into(), json!(f.columns));
+    if f.grid {
+        match positive(&f.grid_every).map_err(|()| bad_field("Horizontal line every"))? {
+            Some(v) => m.insert("gridEvery".into(), json!(v)),
+            None => m.insert("gridEvery".into(), json!(true)),
+        };
+    }
+    Ok(Value::Object(m))
+}
+
+pub fn xsection(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+    let names = centerline_names(app);
+    shell::<XsForm>(
+        app,
+        ctx,
+        open,
+        "xsection_dialog",
+        crate::tl!("Cross Sections"),
+        |ui, f| {
+            if !names.contains(&f.name) {
+                f.name = names.first().cloned().unwrap_or_default();
+            }
+            ui.label(crate::tl!("Centerline"));
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("xsection_centerline")
+                    .selected_text(if f.name.is_empty() { crate::tl!("(none)").to_string() } else { f.name.clone() })
+                    .show_ui(ui, |ui| {
+                        for n in &names {
+                            ui.selectable_value(&mut f.name, n.clone(), n);
+                        }
+                    });
+                f.draw = ui.button(crate::tl!("Draw new...")).clicked();
+            });
+            ui.end_row();
+            ui.label(crate::tl!("Section interval"));
+            edit(ui, &mut f.interval, true);
+            ui.end_row();
+            ui.label(crate::tl!("Width left"));
+            edit(ui, &mut f.left, true);
+            ui.end_row();
+            ui.label(crate::tl!("Width right"));
+            edit(ui, &mut f.right, true);
+            ui.end_row();
+            ui.label(crate::tl!("Vertical exaggeration"));
+            ui.add(egui::TextEdit::singleline(&mut f.vscale).hint_text("1").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Sections per row"));
+            ui.add(egui::DragValue::new(&mut f.columns).range(1..=50));
+            ui.end_row();
+            ui.label(crate::tl!("Horizontal lines"));
+            ui.checkbox(&mut f.grid, "");
+            ui.end_row();
+            ui.label(crate::tl!("Horizontal line every"));
+            ui.add_enabled_ui(f.grid, |ui| edit(ui, &mut f.grid_every, true));
+            ui.end_row();
+        },
+        |app, f| {
+            // Draw a centerline first: the dialog closes and the command asks for the points.
+            if std::mem::take(&mut f.draw) {
+                app.ui.dialog = None;
+                app.start("alignment");
+            }
+        },
+        |app, f| {
+            let p = xs_params(f)?;
+            app.run("xsection", p)?;
+            let _ = app.session.execute("zoom.extents", &Value::Null);
+            Ok(())
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +746,21 @@ mod tests {
         assert_eq!(p["color"], json!([34, 139, 34]));
         f.size = "-2".into();
         assert!(trees_params(&f).is_err());
+    }
+
+    #[test]
+    fn sections_need_a_centerline_and_ask_for_the_horizontal_lines() {
+        assert!(xs_params(&XsForm::default()).is_err(), "no centerline");
+        let f = XsForm { name: "Line 1A".into(), ..XsForm::default() };
+        let p = xs_params(&f).unwrap_or_default();
+        assert_eq!((p["name"].as_str(), p["gridEvery"].clone(), p.get("interval")), (Some("Line 1A"), json!(true), None));
+        let f = XsForm { name: "Line 1A".into(), grid_every: "2.5".into(), interval: "50".into(), ..XsForm::default() };
+        let p = xs_params(&f).unwrap_or_default();
+        assert_eq!((p["gridEvery"].clone(), p["interval"].clone()), (json!(2.5), json!(50.0)));
+        let f = XsForm { name: "L".into(), grid: false, ..XsForm::default() };
+        assert!(xs_params(&f).unwrap_or_default().get("gridEvery").is_none());
+        let f = XsForm { name: "L".into(), grid_every: "-1".into(), ..XsForm::default() };
+        assert!(xs_params(&f).is_err());
     }
 
     #[test]

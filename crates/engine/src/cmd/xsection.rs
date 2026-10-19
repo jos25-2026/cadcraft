@@ -23,15 +23,26 @@ const MAX_VERTS: usize = 100_000;
 /// Largest coordinate or length accepted.
 const MAX_COORD: f64 = 1.0e12;
 
+/// The prefix of the layer a named centerline lives on: `CL-Line 1A`.
+pub const CENTERLINE_PREFIX: &str = "CL-";
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec::new("alignment", "Survey Centerline...", run_centerline)
+            .alias(&["surveycl", "drawalignment", "xscl"])
+            .menu(&["Draw", "Survey Centerline..."])
+            .params(
+                "{points: [[x, y], ...], name?: \"Line 1A\" (default: the next free name Line 1A, Line 2A, ...)} → {name, layer, length}. The \
+                 polyline is drawn on the layer `CL-<name>`; XSECTION lists the centerlines by name; not CENTERLINE, which draws a centre line between two lines",
+            )
+            .interactive(|_| Ok(Box::new(ClM::default()))),
         CommandSpec::new("xsection", "Cross Sections...", run_xsection)
             .alias(&["crosssections", "xs", "sections"])
             .menu(&["Tools", "Terrain", "Cross Sections..."])
             .params(
                 "{centerline?: handle of a polyline or line, points?: [[x, y], ...] (the centerline when no handle), interval?: distance between \
                  sections (default: a round number giving about 10), width?: distance covered on each side (default: a tenth of the length), \
-                 leftWidth?, rightWidth?, step?: spacing of the samples across (default: a hundredth of the width), vScale?: vertical \
+                 leftWidth?, rightWidth?, name?: a centerline made with ALIGNMENT (\"Line 1A\"), gridEvery?: draw horizontal lines at every this much elevation (true: a round number), step?: spacing of the samples across (default: a hundredth of the width), vScale?: vertical \
                  exaggeration (default 1), columns?: sections per row of the sheet (default 3), at?: [x, y] top left of the sheet (default: \
                  right of the drawing), textHeight?, handles?: [3DFACE triangles] (default: the TIN layer, else a TIN is built from the points), \
                  plan?: true (draw the section lines), layerPrefix?: \"XS\"} → {stations, sections, datum}",
@@ -126,17 +137,70 @@ fn line_of(s: &Session, h: Handle) -> Option<Vec<Vec2>> {
     (pts.len() <= MAX_VERTS).then_some(pts)
 }
 
+/// The layer of the centerline called `name`.
+fn centerline_layer(cmd: &str, name: &str) -> Result<String> {
+    let name = name.trim();
+    super::terrain::layer_name(cmd, &format!("{CENTERLINE_PREFIX}{name}"))
+        .map_err(|_| bad(cmd, "a centerline name is 1 to 60 characters without < > / \\ \" : ; ? * | = `"))
+}
+
+/// The vertices of the centerline called `name` (the first line or polyline on its layer).
+fn named_line(s: &Session, name: &str) -> Result<Vec<Vec2>> {
+    let layer = centerline_layer("xsection", name)?;
+    let d = s.doc()?;
+    d.model
+        .iter()
+        .filter(|e| e.common.layer.eq_ignore_ascii_case(&layer))
+        .find_map(|e| line_of(s, e.handle))
+        .ok_or_else(|| bad("xsection", format!("no centerline named \"{}\": draw one with ALIGNMENT", name.trim())))
+}
+
+/// `Line 1A`, `Line 2A`, ...: the first name no layer uses yet.
+fn next_name(s: &Session) -> String {
+    let used = |n: &str| s.doc().is_ok_and(|d| d.layers.iter().any(|l| l.name.eq_ignore_ascii_case(&format!("{CENTERLINE_PREFIX}{n}"))));
+    (1..=100_000).map(|i| format!("Line {i}A")).find(|n| !used(n)).unwrap_or_else(|| "Line".into())
+}
+
+/// ALIGNMENT: draws the points as a polyline named `name` (its own layer), to cut sections along.
+fn run_centerline(s: &mut Session, p: &Value) -> Result<Value> {
+    let pts = centerline(s, &json!({ "points": p.get("points").cloned().unwrap_or(Value::Null) }))?;
+    let name = match str_param(p, "name") {
+        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+        _ => next_name(s),
+    };
+    let layer = centerline_layer("alignment", &name)?;
+    if s.doc()?.layers.iter().any(|l| l.name.eq_ignore_ascii_case(&layer)) {
+        return Err(bad("alignment", format!("a centerline named \"{name}\" exists: use another name")));
+    }
+    let length: f64 = pts.windows(2).map(|w| (w[1] - w[0]).len()).sum();
+    let verts = pts.iter().map(|q| PolyVertex::new(*q)).collect();
+    let kind = EntityKind::LwPolyline(LwPolyline { vertices: verts, closed: false, const_width: 0.0, elevation: 0.0, plinegen: false });
+    let (space, base) = (s.space(), s.current_common());
+    let d = s.doc_mut()?;
+    if d.ensure_layer(&layer)
+        && let Some(l) = d.layers.iter_mut().find(|l| l.name == layer)
+    {
+        l.color = Color::Index(2);
+    }
+    d.add(&space, Common { layer: layer.clone(), color: Color::ByLayer, ..base }, kind)?;
+    let msg = format!("centerline {name}: {} points, length {length:.2}", pts.len());
+    s.echo(msg.clone());
+    Ok(json!({ "name": name, "layer": layer, "length": length, "points": pts.len(), "message": msg }))
+}
+
 fn centerline(s: &Session, p: &Value) -> Result<Vec<Vec2>> {
     let raw: Vec<Vec2> = if let Some(a) = p.get("points").and_then(Value::as_array) {
         if a.len() > MAX_VERTS {
             return Err(bad("xsection", format!("more than {MAX_VERTS} centerline points")));
         }
         a.iter().map(|v| point_value(v).ok_or_else(|| bad("xsection", "`points` must be [x, y] pairs"))).collect::<Result<_>>()?
+    } else if let Some(name) = str_param(p, "name") {
+        named_line(s, name)?
     } else if let Some(t) = str_param(p, "centerline") {
         let h = Handle::parse_hex(t).ok_or_else(|| bad("xsection", "`centerline` is not a handle"))?;
         line_of(s, h).ok_or_else(|| bad("xsection", "`centerline` must be a line or polyline"))?
     } else {
-        return Err(bad("xsection", "`centerline` (a handle) or `points` is required"));
+        return Err(bad("xsection", "`name` (a centerline), `centerline` (a handle) or `points` is required"));
     };
     if raw.iter().any(|v| !(v.x.is_finite() && v.y.is_finite() && v.x.abs() <= MAX_COORD && v.y.abs() <= MAX_COORD)) {
         return Err(bad("xsection", "the centerline has invalid coordinates"));
@@ -194,6 +258,12 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let prefix = layer_name("xsection", str_param(p, "layerPrefix").unwrap_or("XS"))?;
     let plan = bool_or(p, "plan", true);
+    // Horizontal lines at every `gridEvery` of elevation (true: a round number).
+    let grid: Option<Option<f64>> = match p.get("gridEvery") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(None),
+        Some(_) => Some(size_param("xsection", p, "gridEvery", false)?),
+    };
 
     let stations_f = (total / interval).floor();
     if !(stations_f.is_finite() && stations_f < MAX_STATIONS as f64) {
@@ -247,6 +317,12 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
     let range = (zmax - zmin).max(1e-9);
     let vstep = nice_spacing(range);
     let datum = ((zmin - 0.1 * range) / vstep).floor() * vstep;
+    let grid_step = grid.map(|g| g.unwrap_or(vstep));
+    if let Some(g) = grid_step
+        && !(0.0..300.0).contains(&((zmax - datum) / g))
+    {
+        return Err(bad("xsection", "too many horizontal lines: use a larger `gridEvery`"));
+    }
     let pad = th * 5.0;
     let (cw, ch) = (span + 2.0 * pad, (zmax - datum) * vscale + 2.0 * pad);
     let gap = th * 3.0;
@@ -261,6 +337,7 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
 
     let (l_lines, l_ground, l_frame, l_text, l_cl) =
         (format!("{prefix}-LINES"), format!("{prefix}-GROUND"), format!("{prefix}-FRAME"), format!("{prefix}-TEXT"), format!("{prefix}-CL"));
+    let l_grid = format!("{prefix}-GRID");
     let v3 = |q: Vec2| Vec3::new(q.x, q.y, 0.0);
     let seg = |a: Vec2, b: Vec2| EntityKind::Line(Line { a: v3(a), b: v3(b) });
     let polyline = |pts: Vec<Vec2>, closed: bool| {
@@ -289,6 +366,15 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
             polyline(vec![top, Vec2::new(top.x + cw, top.y), Vec2::new(top.x + cw, top.y - ch), Vec2::new(top.x, top.y - ch)], true),
         ));
         items.push((&l_frame, seg(Vec2::new(xl, base), Vec2::new(xr, base))));
+        if let Some(g) = grid_step {
+            let decimals = if g.fract() == 0.0 { 0 } else { 2 };
+            for k in 1..=(((zmax - datum) / g).floor() as usize) {
+                let level = datum + k as f64 * g;
+                let y = base + (level - datum) * vscale;
+                items.push((&l_grid, seg(Vec2::new(xl, y), Vec2::new(xr, y))));
+                items.push((&l_text, text(Vec2::new(top.x + th * 0.5, y - th * 0.3), &format!("{level:.decimals$}"), th)));
+            }
+        }
         items.push((&l_cl, seg(Vec2::new(x0 + left, base), Vec2::new(x0 + left, top.y - pad * 0.5))));
         items.push((&l_text, text(Vec2::new(top.x + pad, top.y - pad * 0.6), &label, th * 1.4)));
         items.push((&l_text, text(Vec2::new(top.x + th * 0.5, base - th * 1.6), &format!("Datum {datum:.2}"), th)));
@@ -319,7 +405,7 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
     let n_items = items.len();
     {
         let d = s.doc_mut()?;
-        for (l, c) in [(&l_lines, 1u8), (&l_ground, 3), (&l_frame, 8), (&l_text, 7), (&l_cl, 2)] {
+        for (l, c) in [(&l_lines, 1u8), (&l_ground, 3), (&l_frame, 8), (&l_text, 7), (&l_cl, 2), (&l_grid, 8)] {
             if d.ensure_layer(l)
                 && let Some(x) = d.layers.iter_mut().find(|x| x.name == *l)
             {
@@ -426,14 +512,9 @@ impl Interactive for XsM {
                         self.pts.clear();
                         return Ok(Step::Continue);
                     }
-                    // The clicked line stays in the drawing as the centerline.
-                    let verts = self.pts.iter().map(|q| PolyVertex::new(*q)).collect();
-                    let kind =
-                        EntityKind::LwPolyline(LwPolyline { vertices: verts, closed: false, const_width: 0.0, elevation: 0.0, plinegen: false });
-                    let (space, base) = (s.space(), s.current_common());
-                    let d = s.doc_mut()?;
-                    d.ensure_layer("XS-CENTERLINE");
-                    d.add(&space, Common { layer: "XS-CENTERLINE".into(), ..base }, kind)?;
+                    // The clicked line stays in the drawing as a named centerline.
+                    let pts: Vec<[f64; 2]> = self.pts.iter().map(|q| [q.x, q.y]).collect();
+                    run_centerline(s, &json!({ "points": pts }))?;
                     self.step = 1;
                 }
                 Input::Enter => {
@@ -480,6 +561,66 @@ impl Interactive for XsM {
                 }
                 run_xsection(s, &params)?;
                 Ok(Step::Done)
+            }
+        }
+    }
+}
+
+/// ALIGNMENT at the command line: click the points, then the name.
+#[derive(Default)]
+struct ClM {
+    pts: Vec<Vec2>,
+    naming: bool,
+}
+
+impl Interactive for ClM {
+    fn name(&self) -> &'static str {
+        "ALIGNMENT"
+    }
+    fn prompt(&self, s: &Session) -> Prompt {
+        if self.naming {
+            let mut p = Prompt::new("Name of the centerline", Accept::TEXT);
+            p.default = Some(next_name(s));
+            p
+        } else if self.pts.is_empty() {
+            Prompt::new("Specify the first point of the centerline", Accept::POINT)
+        } else {
+            let mut p = Prompt::new("Next point (Enter to finish)", Accept::POINT);
+            p.base = self.pts.last().copied();
+            p
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        match i {
+            Input::Cancel => Ok(Step::Cancel),
+            Input::Point(q) if !self.naming => {
+                self.pts.push(q);
+                Ok(Step::Continue)
+            }
+            Input::Enter if !self.naming => {
+                self.pts = distinct_points(&self.pts);
+                if self.pts.len() < 2 {
+                    s.echo("The centerline needs at least two different points.".to_string());
+                    return Ok(Step::Continue);
+                }
+                self.naming = true;
+                Ok(Step::Continue)
+            }
+            Input::Text(t) if self.naming => self.finish(s, t.trim()),
+            Input::Enter if self.naming => self.finish(s, ""),
+            _ => Ok(Step::Continue),
+        }
+    }
+}
+
+impl ClM {
+    fn finish(&mut self, s: &mut Session, name: &str) -> Result<Step> {
+        let pts: Vec<[f64; 2]> = self.pts.iter().map(|q| [q.x, q.y]).collect();
+        match run_centerline(s, &json!({ "points": pts, "name": name })) {
+            Ok(_) => Ok(Step::Done),
+            Err(e) => {
+                s.echo(e.to_string());
+                Ok(Step::Continue)
             }
         }
     }

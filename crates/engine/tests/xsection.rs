@@ -81,3 +81,32 @@ fn bad_requests_are_refused_and_change_nothing() {
     assert_eq!(s.doc().unwrap().model.iter().count(), before);
     assert!(Session::new().execute("xsection", &json!({ "points": [[0, 0], [10, 0]] })).is_err(), "no surface at all");
 }
+
+#[test]
+fn centerlines_are_named_and_sections_cut_along_them_with_horizontal_lines() {
+    let mut s = plane();
+    let r = s.execute("alignment", &json!({ "points": [[10, 50], [90, 50]] })).unwrap();
+    assert_eq!(r["name"], "Line 1A");
+    assert_eq!(s.execute("alignment", &json!({ "points": [[10, 20], [90, 20]] })).unwrap()["name"], "Line 2A");
+    assert_eq!(s.execute("alignment", &json!({ "points": [[10, 30], [90, 30]], "name": "Road" })).unwrap()["layer"], "CL-Road");
+    assert!(s.execute("alignment", &json!({ "points": [[1, 1], [5, 5]], "name": "road" })).is_err(), "a name is used once");
+    assert!(s.execute("alignment", &json!({ "points": [[1, 1]] })).is_err());
+    assert!(s.execute("alignment", &json!({ "points": [[1, 1], [5, 5]], "name": "a<b" })).is_err());
+
+    let r = s.execute("xsection", &json!({ "name": "Line 1A", "interval": 20, "width": 10, "gridEvery": 1 })).unwrap();
+    assert_eq!(r["sections"], 5);
+    // The sections span about 1.8 to 10.2 above a datum just under that: lines every 1.
+    let (zmin, zmax) = (r["zMin"].as_f64().unwrap(), r["zMax"].as_f64().unwrap());
+    let datum = r["datum"].as_f64().unwrap();
+    assert!(datum <= zmin && zmax - datum >= 8.0);
+    let per_section = layer_count(&s, "XS-GRID") / 5;
+    assert_eq!(per_section as f64, ((zmax - datum) / 1.0).floor());
+    assert!(s.execute("xsection", &json!({ "name": "Nope" })).is_err());
+    assert!(s.execute("xsection", &json!({ "name": "Line 1A", "gridEvery": -1 })).is_err());
+    assert!(s.execute("xsection", &json!({ "name": "Line 1A", "gridEvery": 1e-9 })).is_err(), "too many lines");
+    // Without gridEvery there are no horizontal lines.
+    let mut s2 = plane();
+    s2.execute("alignment", &json!({ "points": [[10, 50], [90, 50]] })).unwrap();
+    s2.execute("xsection", &json!({ "name": "Line 1A", "interval": 40 })).unwrap();
+    assert_eq!(layer_count(&s2, "XS-GRID"), 0);
+}

@@ -418,6 +418,10 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             app.ui.dialog = Some("mapgrid".into());
             Ok(Value::Null)
         }
+        "xsection" | "xs" | "crosssections" | "sections" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("xsection".into());
+            Ok(Value::Null)
+        }
         "trees" | "planttrees" | "treesymbols" if params.is_null() && app.session.state().is_ok() => {
             app.ui.dialog = Some("trees".into());
             Ok(Value::Null)
