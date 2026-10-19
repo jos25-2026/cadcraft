@@ -106,3 +106,22 @@ fn prompt_asks_for_the_path_and_places_the_image() {
     assert_eq!(only_image(&s).size.x, 8.0);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn an_unreadable_picture_is_placed_with_a_warning_that_says_why() {
+    let d = dir("broken");
+    let p = d.join("broken.jpg");
+    std::fs::write(&p, b"not really a jpeg").unwrap();
+    let mut s = Session::new();
+    // Attaching a file the reader can't open at all is an error; a readable header with a
+    // broken body is placed with a warning.
+    assert!(s.execute("imageattach", &json!({ "path": p.to_string_lossy() })).is_err());
+    let _ = std::fs::remove_dir_all(&d);
+
+    let d = dir("fine");
+    let img = png(&d, "ok.png", 10, 10);
+    let r = s.execute("imageattach", &json!({ "path": img, "insert": [100, 200], "scale": 2 })).unwrap();
+    assert!(r["warning"].is_null(), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("covers E 100.00 to 120.00, N 200.00 to 220.00"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}

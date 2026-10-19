@@ -184,21 +184,31 @@ fn run_attach(s: &mut Session, p: &Value) -> Result<Value> {
         u: Vec3::new(u.x, u.y, 0.0),
         v: Vec3::new(v.x, v.y, 0.0),
         size: Vec2::new(wf, hf),
-        path: stored,
+        path: stored.clone(),
         name,
         ..Image::default()
     };
     let corners = [origin, origin + u * wf, origin + u * wf + v * hf, origin + v * hf];
     let handle = s.add_entity(EntityKind::Image(img))?;
-    let msg = match &world {
+    let mut msg = match &world {
         Some((_, f)) => format!("image {w} × {h} placed from {f}"),
         None => format!("image {w} × {h} placed at {:.3},{:.3}", origin.x, origin.y),
     };
+    // Where it landed, so a picture far from the rest of the drawing can be found (ZOOM Extents).
+    let (lo, hi) = corners.iter().fold((Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY)), |(l, h), c| {
+        (Vec2::new(l.x.min(c.x), l.y.min(c.y)), Vec2::new(h.x.max(c.x), h.y.max(c.y)))
+    });
+    msg.push_str(&format!("; covers E {:.2} to {:.2}, N {:.2} to {:.2}", lo.x, hi.x, lo.y, hi.y));
     s.echo(msg.clone());
+    let warning = cadcraft_render::image_layer::problem(&stored);
+    if let Some(w) = &warning {
+        s.echo(format!("WARNING: the picture is placed but cannot be shown: {w}"));
+    }
     Ok(json!({
         "handle": handle.hex(),
         "size": [w, h],
         "worldFile": world.as_ref().map(|(_, f)| f),
+        "warning": warning,
         "corners": corners.iter().map(|c| [c.x, c.y]).collect::<Vec<_>>(),
         "message": msg,
     }))

@@ -161,6 +161,41 @@ pub(crate) fn load(path: &str) -> Option<Arc<Pixmap>> {
     }
 }
 
+/// Why the image at `path` cannot be shown, in words for the user; `None` when it loads.
+pub fn problem(path: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if load(path).is_some() {
+            return None;
+        }
+        let reader = match image::ImageReader::open(path).and_then(|r| r.with_guessed_format()) {
+            Ok(r) => r,
+            Err(e) => return Some(format!("the file cannot be read ({e})")),
+        };
+        let jpeg = reader.format() == Some(image::ImageFormat::Jpeg);
+        let (w, h) = match reader.into_dimensions() {
+            Ok(d) => d,
+            Err(e) => return Some(format!("not a readable PNG, JPEG or TIFF picture ({e})")),
+        };
+        if u64::from(w) * u64::from(h) > MAX_PIXELS {
+            return Some(if jpeg {
+                format!("a {w} × {h} JPEG of this kind (not RGB or grey) is too large to decode; save it as a normal RGB JPEG")
+            } else {
+                format!("{w} × {h} pixels is larger than {} million pixels; only JPEG files that big can be shown", MAX_PIXELS / 1_000_000)
+            });
+        }
+        Some(match image::open(path) {
+            Err(e) => format!("the picture cannot be decoded ({e})"),
+            Ok(_) => "the picture could not be loaded".to_string(),
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Some("pictures cannot be shown on the web".to_string())
+    }
+}
+
 /// A change stamp of the image file (0 when it can't be read, and on the web).
 pub fn file_stamp(path: &str) -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
