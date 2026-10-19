@@ -71,16 +71,56 @@ fn stamp(path: &str) -> u64 {
     t.wrapping_mul(1_000_003).wrapping_add(m.len())
 }
 
+/// Longest side wanted from a JPEG too big to decode whole (see [`decode_jpeg_small`]).
+#[cfg(not(target_arch = "wasm32"))]
+const BIG_JPEG_TARGET: u16 = 3000;
+
+/// A very large JPEG (a survey orthophoto can be 25 000 px square) decoded at 1/2, 1/4 or 1/8 of
+/// its size, as the JPEG format allows, so the full picture never sits in memory. The drawing
+/// stretches the result over the image's frame. `None` for formats other than grey and RGB.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_jpeg_small(path: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let mut d = jpeg_decoder::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    d.read_info().ok()?;
+    let (w, h) = d.scale(BIG_JPEG_TARGET, BIG_JPEG_TARGET).ok()?;
+    let px = d.decode().ok()?;
+    let n = usize::from(w).checked_mul(usize::from(h))?;
+    let mut out = Vec::with_capacity(n.checked_mul(4)?);
+    match d.info()?.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 if px.len() == n.checked_mul(3)? => {
+            for c in px.chunks_exact(3) {
+                out.extend_from_slice(c);
+                out.push(255);
+            }
+        }
+        jpeg_decoder::PixelFormat::L8 if px.len() == n => {
+            for g in px {
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+        _ => return None,
+    }
+    Some((u32::from(w), u32::from(h), out))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn decode(path: &str) -> Option<Pixmap> {
     let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let jpeg = reader.format() == Some(image::ImageFormat::Jpeg);
     let (w, h) = reader.into_dimensions().ok()?;
-    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
+    if w == 0 || h == 0 {
         return None;
     }
-    let rgba = image::open(path).ok()?.into_rgba8();
-    let (w, h) = rgba.dimensions();
-    let mut data = rgba.into_raw();
+    let (w, h, mut data) = if u64::from(w) * u64::from(h) > MAX_PIXELS {
+        if !jpeg {
+            return None;
+        }
+        decode_jpeg_small(path)?
+    } else {
+        let rgba = image::open(path).ok()?.into_rgba8();
+        let (w, h) = rgba.dimensions();
+        (w, h, rgba.into_raw())
+    };
     // tiny-skia holds premultiplied colour.
     for px in data.chunks_exact_mut(4) {
         if let [r, g, b, a] = px {
@@ -215,4 +255,23 @@ pub(crate) fn draw(pm: &mut Pixmap, im: &ImagePlacement, view: &View, antialias:
         None
     };
     pm.fill_path(&PathBuilder::from_rect(rect), &paint, FillRule::Winding, tf, mask.as_ref());
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_big_jpeg_is_decoded_at_a_fraction_of_its_size() {
+        let path = std::env::temp_dir().join(format!("cc-bigjpeg-{}.jpg", std::process::id()));
+        // 6400 × 3200 px, solid orange: too big to need full size, small enough to write quickly.
+        image::RgbImage::from_pixel(6400, 3200, image::Rgb([240, 120, 10])).save(&path).unwrap();
+        let (w, h, px) = decode_jpeg_small(path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(w < 6400 && h < 3200 && w >= 3000 / 2, "{w} × {h}");
+        assert_eq!(px.len(), w as usize * h as usize * 4);
+        let mid = (h as usize / 2 * w as usize + w as usize / 2) * 4;
+        let p = &px[mid..mid + 4];
+        assert!((i32::from(p[0]) - 240).abs() < 8 && (i32::from(p[1]) - 120).abs() < 8 && (i32::from(p[2]) - 10).abs() < 12, "{p:?}");
+    }
 }

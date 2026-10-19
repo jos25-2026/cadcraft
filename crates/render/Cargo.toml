@@ -21,6 +21,7 @@ image = { workspace = true }
 # Display lists of large drawings are built on all cores (not on the web, which has no threads).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { workspace = true }
+jpeg-decoder = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
