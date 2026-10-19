@@ -68,6 +68,7 @@ fn the_prompts_ask_spacing_style_and_text_height() {
     let mut s = Session::new();
     s.execute("rectang", &json!({ "p1": [0, 0], "p2": [100, 60] })).unwrap();
     s.start("mapgrid").unwrap();
+    s.input(Input::Enter).unwrap(); // no object picked: the whole drawing
     s.input(Input::Text("25".into())).unwrap();
     s.input(Input::Text("cross".into())).unwrap();
     s.input(Input::Text("1.5".into())).unwrap();
@@ -105,4 +106,36 @@ fn bad_input_is_an_error_and_changes_nothing() {
     }
     assert!(s.execute("northarrow", &json!({ "at": [0, 0], "size": -1 })).is_err());
     assert_eq!(count(&s, |_| true), 0);
+}
+
+#[test]
+fn the_grid_can_frame_a_picked_rectangle_or_image() {
+    let mut s = Session::new();
+    s.execute("rectang", &json!({ "p1": [1000, 2000], "p2": [1100, 2060] })).unwrap();
+    s.execute("circle", &json!({ "center": [5000, 5000], "radius": 10 })).unwrap();
+    let rect = s.doc().unwrap().model.iter().find(|e| matches!(e.kind, EntityKind::LwPolyline(_))).map(|e| e.handle).unwrap();
+    // Programmatic: `handles` frames only the rectangle, not the far-away circle.
+    let r = s.execute("mapgrid", &json!({ "handles": [rect.hex()], "spacing": 50 })).unwrap();
+    assert_eq!(r["extent"], json!([1000.0, 2000.0, 1100.0, 2060.0]));
+    // Prompted: the pick frames the grid.
+    s.undo().unwrap();
+    s.start("mapgrid").unwrap();
+    s.input(Input::Pick(vec![rect])).unwrap();
+    s.input(Input::Text("20".into())).unwrap();
+    s.input(Input::Enter).unwrap();
+    s.input(Input::Enter).unwrap();
+    assert!(s.running.is_none());
+    assert!(texts(&s).iter().any(|t| t == "E 1020"), "{:?}", texts(&s));
+    assert!(!texts(&s).iter().any(|t| t.contains("5000")), "the circle stays out of the grid");
+}
+
+#[test]
+fn a_selected_object_frames_the_grid_at_once() {
+    let mut s = Session::new();
+    s.execute("rectang", &json!({ "p1": [0, 0], "p2": [100, 60] })).unwrap();
+    s.execute("circle", &json!({ "center": [900, 900], "radius": 10 })).unwrap();
+    let rect = s.doc().unwrap().model.iter().find(|e| matches!(e.kind, EntityKind::LwPolyline(_))).map(|e| e.handle).unwrap();
+    s.set_selection(vec![rect]);
+    s.start("mapgrid").unwrap();
+    assert!(s.prompt_text().contains("Grid spacing"), "{}", s.prompt_text());
 }

@@ -3,7 +3,7 @@
 //! arrow. Both draw ordinary lines, polylines, solids and text on their own layers.
 
 use cadcraft_color::Color;
-use cadcraft_doc::{Common, EntityKind, HAlign, Line, LwPolyline, Solid, VAlign, entity_bounds};
+use cadcraft_doc::{Common, EntityKind, HAlign, Handle, Line, LwPolyline, Solid, VAlign, entity_bounds};
 use cadcraft_geom::{Bounds2, PolyVertex, Vec2, Vec3};
 use serde_json::{Value, json};
 
@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["gridlines", "coordgrid"])
             .menu(&["Insert", "Map Grid..."])
             .params(
-                "{extent?: [minX, minY, maxX, maxY] (default: the attached images, else the whole drawing), spacing?: grid interval \
+                "{handles?: [handle of an image or rectangle to frame], extent?: [minX, minY, maxX, maxY] (default: the attached images, else the whole drawing), spacing?: grid interval \
                  (default: a round number giving about 5 cells), style?: \"lines\" | \"cross\" (default lines), textHeight?, \
                  decimals?: 0, crossSize?: arm length of a cross, margin?: width of the label band, frame?: true, \
                  labelPrefix?: true (E / N before the numbers), thousands?: false, layerPrefix?: \"GRID\"}",
@@ -65,6 +65,31 @@ fn default_extent(s: &Session) -> Result<Bounds2> {
     let b = if images.is_empty() { all } else { images };
     if b.is_empty() || !finite(b.min.x) || !finite(b.min.y) || !finite(b.max.x) || !finite(b.max.y) {
         return Err(bad("mapgrid", "nothing to grid: attach an image or draw something first, or pass `extent`"));
+    }
+    Ok(b)
+}
+
+/// The bounds of the given objects: an image's frame (turned or not) or a rectangle's outline.
+fn extent_of(s: &Session, handles: &[Handle]) -> Result<Bounds2> {
+    let d = s.doc()?;
+    let mut b = Bounds2::EMPTY;
+    for h in handles {
+        let Some(e) = d.entity(*h) else { continue };
+        if let EntityKind::Image(i) = &e.kind {
+            let (w, hh) = (i.u.xy() * i.size.x, i.v.xy() * i.size.y);
+            let o = i.insert.xy();
+            for c in [o, o + w, o + w + hh, o + hh] {
+                b.add(c);
+            }
+        } else {
+            let eb = entity_bounds(d, e, 0);
+            if !eb.is_empty() {
+                b = b.union(&eb);
+            }
+        }
+    }
+    if b.is_empty() || !(finite(b.min.x) && finite(b.min.y) && finite(b.max.x) && finite(b.max.y)) {
+        return Err(bad("mapgrid", "the chosen objects have no extent: pick an image or a rectangle"));
     }
     Ok(b)
 }
@@ -151,9 +176,15 @@ fn layer_prefix(p: &Value) -> Result<String> {
 }
 
 fn run_grid(s: &mut Session, p: &Value) -> Result<Value> {
-    let ext = match extent_param(p)? {
-        Some(e) => e,
-        None => default_extent(s)?,
+    let handles: Vec<Handle> = p
+        .get("handles")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().and_then(Handle::parse_hex)).collect())
+        .unwrap_or_default();
+    let ext = match (extent_param(p)?, handles.is_empty()) {
+        (Some(e), _) => e,
+        (None, false) => extent_of(s, &handles)?,
+        (None, true) => default_extent(s)?,
     };
     let (w, h) = (ext.width(), ext.height());
     if !(w > 0.0 && h > 0.0) {
@@ -337,13 +368,15 @@ fn run_north(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "at": [c.x, c.y], "size": size, "rotation": rot.to_degrees(), "message": "north arrow inserted" }))
 }
 
-/// MAPGRID at the command line: spacing, style, text size, then draw.
+/// MAPGRID at the command line: the image or rectangle to frame, spacing, style, text size.
 #[derive(Default)]
 struct GridM {
     spacing: Option<f64>,
     cross: bool,
+    /// 0 pick the object, 1 spacing, 2 style, 3 text height.
     step: u8,
     ext: Option<Bounds2>,
+    handles: Vec<Handle>,
 }
 
 fn number(t: &str) -> Option<f64> {
@@ -355,18 +388,28 @@ impl Interactive for GridM {
         "MAPGRID"
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
-        self.ext = Some(default_extent(s)?);
+        // Objects already selected (pickfirst) frame the grid straight away.
+        let sel = s.selection();
+        if !sel.is_empty()
+            && let Ok(b) = extent_of(s, &sel)
+        {
+            self.ext = Some(b);
+            self.handles = sel;
+            self.step = 1;
+            s.set_selection(Vec::new());
+        }
         Ok(Step::Continue)
     }
     fn prompt(&self, _s: &Session) -> Prompt {
         let auto = self.ext.map(|e| nice_spacing(e.width().max(e.height())));
         match self.step {
-            0 => {
+            0 => Prompt::new("Select the image or rectangle that frames the grid (Enter: all images, else the whole drawing)", Accept::SELECT),
+            1 => {
                 let mut p = Prompt::new("Grid spacing in drawing units", Accept::TEXT);
                 p.default = auto.map(|v| v.to_string());
                 p
             }
-            1 => {
+            2 => {
                 let mut p = Prompt::new("Grid style: Lines (full lines) or Cross", Accept::TEXT);
                 p.default = Some("Lines".into());
                 p
@@ -379,6 +422,29 @@ impl Interactive for GridM {
         }
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        if self.step == 0 {
+            match i {
+                Input::Pick(hs) => match extent_of(s, &hs) {
+                    Ok(b) => {
+                        self.ext = Some(b);
+                        self.handles = hs;
+                        s.set_selection(Vec::new());
+                    }
+                    Err(e) => {
+                        s.echo(e.to_string());
+                        return Ok(Step::Continue);
+                    }
+                },
+                Input::Enter => self.ext = Some(default_extent(s)?),
+                Input::Cancel => return Ok(Step::Cancel),
+                _ => {
+                    s.echo("Click an image or a rectangle, or press Enter.".to_string());
+                    return Ok(Step::Continue);
+                }
+            }
+            self.step = 1;
+            return Ok(Step::Continue);
+        }
         let text = match i {
             Input::Text(t) => t.trim().to_string(),
             Input::Keyword(k) => k,
@@ -386,7 +452,7 @@ impl Interactive for GridM {
             _ => return Ok(Step::Cancel),
         };
         match self.step {
-            0 => {
+            1 => {
                 if !text.is_empty() {
                     match number(&text) {
                         Some(v) => self.spacing = Some(v),
@@ -396,17 +462,20 @@ impl Interactive for GridM {
                         }
                     }
                 }
-                self.step = 1;
+                self.step = 2;
                 Ok(Step::Continue)
             }
-            1 => {
+            2 => {
                 let t = text.to_ascii_lowercase();
                 self.cross = t.starts_with('c') || t.starts_with('x') || t.starts_with('+');
-                self.step = 2;
+                self.step = 3;
                 Ok(Step::Continue)
             }
             _ => {
                 let mut params = json!({ "style": if self.cross { "cross" } else { "lines" } });
+                if let Some(e) = self.ext {
+                    params["extent"] = json!([e.min.x, e.min.y, e.max.x, e.max.y]);
+                }
                 if let Some(v) = self.spacing {
                     params["spacing"] = json!(v);
                 }
