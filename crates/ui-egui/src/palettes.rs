@@ -40,6 +40,7 @@ pub const DRAFTING: &[(&str, &[Tool], &[Tool])] = &[
             (Icon::Wipeout, "wipeout", "Wipeout"),
         ],
     ),
+    ("Survey", &[(Icon::Contour, "contour", "Contours")], &[]),
     ("Hatch", &[(Icon::Hatch, "hatch", "Hatch"), (Icon::Gradient, "gradient", "Gradient"), (Icon::Boundary, "boundary", "Boundary")], &[]),
     (
         "Block",

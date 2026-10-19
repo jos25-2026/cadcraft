@@ -17,6 +17,7 @@ pub mod clipboard;
 pub mod closing;
 pub mod cmdline;
 pub mod context_menu;
+pub mod contourdlg;
 pub mod control;
 pub mod credits;
 pub mod dialogs;

@@ -50,6 +50,7 @@ pub enum Icon {
     Boundary,
     Region,
     Wipeout,
+    Contour,
     Table,
     Text,
     MText,
@@ -458,6 +459,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
         Region => {
             pen.poly(&[(4.0, 18.0), (6.0, 6.0), (16.0, 4.0), (20.0, 14.0), (12.0, 20.0)], true, a);
             pen.fill_c(12.0, 12.0, 3.0, a.gamma_multiply(0.5));
+        }
+        Contour => {
+            pen.poly(&[(3.0, 17.0), (8.0, 9.0), (15.0, 8.0), (21.0, 14.0)], false, a);
+            pen.poly(&[(6.0, 19.0), (10.0, 13.0), (15.0, 12.5), (19.0, 17.0)], false, b);
+            pen.fill_c(12.0, 6.0, 1.5, a);
         }
         Wipeout => {
             pen.rect(3.0, 3.0, 13.0, 13.0, b);

@@ -407,6 +407,11 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             }
             Ok(Value::Null)
         }
+        // Typed or from an icon (no parameters): the Contours dialog; JSON calls run the command.
+        "contour" | "contours" | "createcontours" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("contour".into());
+            Ok(Value::Null)
+        }
         "dsettings" | "ds" | "se" if params.is_null() => {
             app.ui.dialog = Some("dsettings".into());
             Ok(Value::Null)

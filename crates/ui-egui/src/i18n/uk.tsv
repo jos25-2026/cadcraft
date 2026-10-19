@@ -1345,3 +1345,14 @@
 	Lowest elevation	Найнижча відмітка
 	Highest elevation	Найвища відмітка
 	Text height of the elevation labels in drawing units (Enter: automatic)	Висота тексту підписів відміток у одиницях малюнка (Enter: автоматично)
+	Contours	Горизонталі
+	Contour interval	Переріз горизонталей
+	Automatic	Автоматично
+	Major contour every	Потовщена кожна
+	Smoothing (0-4)	Згладжування (0-4)
+	Elevation labels	Підписи висот
+	Label text height	Висота тексту підписів
+	Decimals	Знаків після коми
+	Layer prefix	Префікс шару
+	enter a positive number	введіть додатне число
+	Survey	Топозйомка
