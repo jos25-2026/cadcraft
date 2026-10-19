@@ -775,6 +775,14 @@ pub struct CursorQuery {
 }
 
 impl crate::Session {
+    /// The drawing's elevation (Z) at `p` for the coordinate readout; see [`super::elevation_at`].
+    pub fn elevation_at(&self, p: Vec2, aperture: f64) -> Option<f64> {
+        let st = self.state().ok()?;
+        let (doc, space) = (st.doc.clone(), st.edit_space());
+        let ix = crate::spatial::index(&doc, &space);
+        super::elevation_at(&doc, &space, &ix, p, aperture)
+    }
+
     /// The cursor at a point prompt, snapped: running object snaps first (resting on a snap point
     /// acquires it for tracking), then grid snap, then tracking paths (polar, object snap
     /// tracking, Extension, Parallel, Apparent Intersection), then ortho.

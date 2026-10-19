@@ -91,6 +91,8 @@ pub struct CanvasState {
     pub snap: Option<SnapHit>,
     /// Effective cursor point after snaps/ortho/polar.
     pub cursor: Option<Vec2>,
+    /// The drawing's elevation (Z) under the cursor: a survey point, contour or TIN face.
+    pub cursor_z: Option<f64>,
     /// The polar or object snap tracking path(s) the cursor is on.
     pub track: Option<snap::tracking::Track>,
     pan_last: Option<Pos2>,
@@ -1198,6 +1200,7 @@ fn effective_point(app: &mut CadApp, raw: Vec2, xf: &Xf, ctx: &egui::Context) ->
     }
     app.canvas.snap = r.snap;
     app.canvas.track = r.track;
+    app.canvas.cursor_z = app.session.elevation_at(r.point, q.aperture);
     r.point
 }
 

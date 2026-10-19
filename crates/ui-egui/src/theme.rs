@@ -451,9 +451,18 @@ pub fn thai_font() -> Option<&'static std::path::Path> {
         FOUND
             .get_or_init(|| {
                 let candidates: &[&str] = if cfg!(target_os = "macos") {
-                    &["/System/Library/Fonts/Supplemental/Ayuthaya.ttf", "/System/Library/Fonts/Supplemental/Thonburi.ttc", "/System/Library/Fonts/Thonburi.ttc"]
+                    &[
+                        "/System/Library/Fonts/Supplemental/Ayuthaya.ttf",
+                        "/System/Library/Fonts/Supplemental/Thonburi.ttc",
+                        "/System/Library/Fonts/Thonburi.ttc",
+                    ]
                 } else if cfg!(windows) {
-                    &["C:\\Windows\\Fonts\\LeelawUI.ttf", "C:\\Windows\\Fonts\\leelawui.ttf", "C:\\Windows\\Fonts\\tahoma.ttf", "C:\\Windows\\Fonts\\segoeui.ttf"]
+                    &[
+                        "C:\\Windows\\Fonts\\LeelawUI.ttf",
+                        "C:\\Windows\\Fonts\\leelawui.ttf",
+                        "C:\\Windows\\Fonts\\tahoma.ttf",
+                        "C:\\Windows\\Fonts\\segoeui.ttf",
+                    ]
                 } else {
                     &[
                         "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",

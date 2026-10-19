@@ -354,7 +354,7 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
                 "{}, {}, {}",
                 cadcraft_engine::units::format_distance(c.x, lu, lp),
                 cadcraft_engine::units::format_distance(c.y, lu, lp),
-                cadcraft_engine::units::format_distance(0.0, lu, lp)
+                cadcraft_engine::units::format_distance(app.canvas.cursor_z.unwrap_or(0.0), lu, lp)
             )
         });
         // MODEL / PAPER (layouts only): toggles MSPACE and PSPACE like AutoCAD's status button.

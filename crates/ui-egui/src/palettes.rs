@@ -1018,7 +1018,23 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                 num(ui, "Text height", "height", len(tx.height), &mut set, &mut bad, &ids);
                 num(ui, "Defined width", "width", len(tx.width), &mut set, &mut bad, &ids);
             }
+            // A survey point: where it is and its elevation (Z).
+            EntityKind::Point(pt) => {
+                prop_row(ui, "Position X", |ui| read_only(ui, &len(pt.p.x)));
+                prop_row(ui, "Position Y", |ui| read_only(ui, &len(pt.p.y)));
+                prop_row(ui, "Elevation", |ui| read_only(ui, &len(pt.p.z)));
+            }
+            // Contours are polylines at their elevation.
+            EntityKind::Polyline3d(pl) => {
+                let (lo, hi) = pl.points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| (lo.min(q.z), hi.max(q.z)));
+                prop_row(ui, "Vertices", |ui| read_only(ui, &pl.points.len().to_string()));
+                if lo.is_finite() && hi.is_finite() {
+                    prop_row(ui, "Lowest elevation", |ui| read_only(ui, &len(lo)));
+                    prop_row(ui, "Highest elevation", |ui| read_only(ui, &len(hi)));
+                }
+            }
             EntityKind::LwPolyline(pl) => {
+                prop_row(ui, "Elevation", |ui| read_only(ui, &len(pl.elevation)));
                 num(ui, "Global width", "width", len(pl.const_width), &mut set, &mut bad, &ids);
                 let g = cadcraft_geom::Polyline { vertices: pl.vertices.clone(), closed: pl.closed };
                 prop_row(ui, "Length", |ui| read_only(ui, &len(g.len())));

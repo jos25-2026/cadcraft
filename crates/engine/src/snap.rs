@@ -8,7 +8,7 @@ mod viewport;
 pub use viewport::ViewportPoint;
 
 use cadcraft_doc::{Drawing, EntityKind, Insert, MAX_BLOCK_DEPTH, Prim, Space};
-use cadcraft_geom::{Bounds2, Circle, EPS, Ellipse, Mat3, PI, Segment, Vec2, intersect_ext};
+use cadcraft_geom::{Bounds2, Circle, EPS, Ellipse, Mat3, PI, Segment, Vec2, Vec3, intersect_ext};
 use serde::Serialize;
 
 /// OSMODE bits.
@@ -156,6 +156,96 @@ pub fn osnap(d: &Drawing, space: &Space, cursor: Vec2, aperture: f64, osmode: u3
     }
     let ix = crate::spatial::index(d, space);
     osnap_with(d, space, &ix, cursor, aperture, osmode, base, deferred)
+}
+
+/// The elevation (Z) of the drawing at `cursor`, for the coordinate readout: that of the nearest
+/// point, line, polyline or contour within `aperture`, interpolated along 3D lines and polylines;
+/// else that of a 3D face (a TIN triangle) the cursor lies over. `None` where there is nothing.
+pub fn elevation_at(
+    d: &Drawing,
+    space: &Space,
+    ix: &Option<std::sync::Arc<crate::spatial::SpatialIndex>>,
+    cursor: Vec2,
+    aperture: f64,
+) -> Option<f64> {
+    if !cursor.is_finite() || !aperture.is_finite() {
+        return None;
+    }
+    // Nearest of the segment `a`–`b` to the cursor: (distance, Z at that point).
+    let on_segment = |a: Vec3, b: Vec3| -> (f64, f64) {
+        let (a2, b2) = (a.xy(), b.xy());
+        let ab = b2 - a2;
+        let len2 = ab.dot(ab);
+        let t = if len2 > 0.0 { ((cursor - a2).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        ((a2 + ab * t).dist(cursor), a.z + (b.z - a.z) * t)
+    };
+    let probe = Bounds2::new(cursor, cursor).expand(aperture);
+    let mut best: Option<(f64, f64)> = None;
+    let mut face: Option<f64> = None;
+    let mut consider = |dist: f64, z: f64| {
+        if dist <= aperture && z.is_finite() && best.is_none_or(|(bd, _)| dist < bd) {
+            best = Some((dist, z));
+        }
+    };
+    for (n, (e, _)) in crate::select::candidates(d, space, ix, &probe, false, false)?.enumerate() {
+        if n >= 2000 {
+            break;
+        }
+        if !d.is_visible(e) {
+            continue;
+        }
+        match &e.kind {
+            EntityKind::Point(p) => consider(p.p.xy().dist(cursor), p.p.z),
+            EntityKind::Line(l) => {
+                let (dist, z) = on_segment(l.a, l.b);
+                consider(dist, z);
+            }
+            EntityKind::LwPolyline(pl) => {
+                let n = pl.vertices.len();
+                let count = if pl.closed { n } else { n.saturating_sub(1) };
+                for i in 0..count {
+                    if let (Some(a), Some(b)) = (pl.vertices.get(i), pl.vertices.get((i + 1) % n.max(1))) {
+                        let (dist, _) = on_segment(Vec3::new(a.p.x, a.p.y, pl.elevation), Vec3::new(b.p.x, b.p.y, pl.elevation));
+                        consider(dist, pl.elevation);
+                    }
+                }
+            }
+            EntityKind::Polyline3d(pl) => {
+                let n = pl.points.len();
+                let count = if pl.closed { n } else { n.saturating_sub(1) };
+                for i in 0..count {
+                    if let (Some(a), Some(b)) = (pl.points.get(i), pl.points.get((i + 1) % n.max(1))) {
+                        let (dist, z) = on_segment(*a, *b);
+                        consider(dist, z);
+                    }
+                }
+            }
+            EntityKind::Face3d(f) => {
+                let c = f.corners;
+                for tri in [[c[0], c[1], c[2]], [c[0], c[2], c[3]]] {
+                    if let Some(z) = plane_z(&tri, cursor) {
+                        face = Some(z);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    best.map(|(_, z)| z).or(face)
+}
+
+/// Z of triangle `t`'s plane at `p` when `p` lies inside the triangle (barycentric).
+fn plane_z(t: &[Vec3; 3], p: Vec2) -> Option<f64> {
+    let (a, b, c) = (t[0].xy(), t[1].xy(), t[2].xy());
+    let det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if det.abs() < 1e-18 {
+        return None;
+    }
+    let l1 = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / det;
+    let l2 = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / det;
+    let l3 = 1.0 - l1 - l2;
+    let eps = -1e-9;
+    (l1 >= eps && l2 >= eps && l3 >= eps).then(|| l1 * t[0].z + l2 * t[1].z + l3 * t[2].z).filter(|z| z.is_finite())
 }
 
 #[allow(clippy::too_many_arguments)]
