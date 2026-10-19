@@ -11,6 +11,7 @@ pub mod constraints;
 mod draw;
 mod draw2;
 mod draworder;
+mod earthwork;
 mod edit;
 mod exchange;
 pub mod file;
@@ -204,6 +205,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(utility::specs());
         v.extend(survey::specs());
         v.extend(imageattach::specs());
+        v.extend(earthwork::specs());
         v.extend(mapgrid::specs());
         v.extend(terrain::specs());
         v.extend(table::specs());

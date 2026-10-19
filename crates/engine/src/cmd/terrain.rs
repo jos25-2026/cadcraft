@@ -44,7 +44,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn finite3(p: &Vec3) -> bool {
+pub(super) fn finite3(p: &Vec3) -> bool {
     [p.x, p.y, p.z].iter().all(|v| v.is_finite() && v.abs() <= MAX_COORD)
 }
 
@@ -115,7 +115,7 @@ fn triangulate(points: &[Vec3], max_edge: Option<f64>) -> Result<Vec<[Vec3; 3]>>
 
 /// The surface's triangles: the given 3DFACE objects, those on the TIN layer, or a TIN built
 /// from the drawing's points.
-fn surface(s: &Session, handles: &[Handle], layer: &str) -> Result<Vec<[Vec3; 3]>> {
+pub(super) fn surface(s: &Session, handles: &[Handle], layer: &str) -> Result<Vec<[Vec3; 3]>> {
     let d = s.doc()?;
     let mut tris = Vec::new();
     let mut push = |e: &cadcraft_doc::Entity| {
@@ -144,11 +144,11 @@ fn surface(s: &Session, handles: &[Handle], layer: &str) -> Result<Vec<[Vec3; 3]
     Ok(tris)
 }
 
-fn handles_param(p: &Value) -> Vec<Handle> {
+pub(super) fn handles_param(p: &Value) -> Vec<Handle> {
     p.get("handles").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().and_then(Handle::parse_hex)).collect()).unwrap_or_default()
 }
 
-fn layer_name(cmd: &str, raw: &str) -> Result<String> {
+pub(super) fn layer_name(cmd: &str, raw: &str) -> Result<String> {
     let raw = raw.trim();
     if raw.is_empty() || raw.chars().count() > 64 || raw.chars().any(|c| c.is_control() || "<>/\\\":;?*|=`".contains(c)) {
         return Err(bad(cmd, "layer names are 1 to 64 characters without < > / \\ \" : ; ? * | = `"));
@@ -500,7 +500,7 @@ fn run_contour(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
-fn finite_in(v: f64) -> bool {
+pub(super) fn finite_in(v: f64) -> bool {
     v.is_finite() && v.abs() <= MAX_COORD
 }
 
