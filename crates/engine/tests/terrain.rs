@@ -109,6 +109,8 @@ fn prompts_ask_the_interval_and_major_spacing() {
     s.input(Input::Text("10".into())).unwrap();
     s.input(Input::Text("3".into())).unwrap();
     s.input(Input::Text("1".into())).unwrap(); // smoothing
+    assert!(s.running.is_some(), "the label text height is asked last");
+    s.input(Input::Text("0.5".into())).unwrap();
     assert!(s.running.is_none());
     assert!(count(&s, |k| matches!(k, EntityKind::LwPolyline(_))) >= 3);
 }

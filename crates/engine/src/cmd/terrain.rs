@@ -568,7 +568,8 @@ struct ContourM {
     interval: Option<f64>,
     auto: Option<f64>,
     major: Option<u64>,
-    /// 0 interval, 1 major spacing, 2 smoothing.
+    smooth: Option<u64>,
+    /// 0 interval, 1 major spacing, 2 smoothing, 3 label text height.
     step: u8,
 }
 
@@ -592,7 +593,9 @@ impl Interactive for ContourM {
                 return p;
             }
             1 => Prompt::new("Draw a major (thick, labelled) contour every how many contours", Accept::TEXT),
-            _ => Prompt::new("Smoothing of the curves, 0 (straight lines) to 4", Accept::TEXT),
+            2 => Prompt::new("Smoothing of the curves, 0 (straight lines) to 4", Accept::TEXT),
+            // Smaller text labels more contours: a line is labelled when it is 10 text heights long.
+            _ => return Prompt::new("Text height of the elevation labels in drawing units (Enter: automatic)", Accept::TEXT),
         };
         p.default = Some(if self.step == 1 { "5" } else { "2" }.into());
         p
@@ -630,6 +633,19 @@ impl Interactive for ContourM {
                 self.step = 2;
                 Ok(Step::Continue)
             }
+            2 => {
+                if !text.is_empty() {
+                    match text.parse::<u64>() {
+                        Ok(n) if n <= 4 => self.smooth = Some(n),
+                        _ => {
+                            s.echo("Enter a whole number from 0 to 4.".to_string());
+                            return Ok(Step::Continue);
+                        }
+                    }
+                }
+                self.step = 3;
+                Ok(Step::Continue)
+            }
             _ => {
                 let mut params = json!({});
                 if let Some(v) = self.interval {
@@ -638,11 +654,14 @@ impl Interactive for ContourM {
                 if let Some(n) = self.major {
                     params["majorEvery"] = json!(n);
                 }
+                if let Some(n) = self.smooth {
+                    params["smooth"] = json!(n);
+                }
                 if !text.is_empty() {
-                    match text.parse::<u64>() {
-                        Ok(n) if n <= 4 => params["smooth"] = json!(n),
-                        _ => {
-                            s.echo("Enter a whole number from 0 to 4.".to_string());
+                    match number(&text) {
+                        Some(h) => params["textHeight"] = json!(h),
+                        None => {
+                            s.echo("Enter a positive number.".to_string());
                             return Ok(Step::Continue);
                         }
                     }
