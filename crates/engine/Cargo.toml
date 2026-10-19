@@ -23,6 +23,8 @@ thiserror = { workspace = true }
 log = { workspace = true }
 # R-tree spatial index for picking, window selection and object snaps (MIT OR Apache-2.0).
 rstar = { version = "0.12", default-features = false }
+# Delaunay triangulation of survey points for TIN surfaces (MIT OR Apache-2.0).
+spade = "2"
 
 image = { workspace = true }
 

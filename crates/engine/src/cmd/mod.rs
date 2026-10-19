@@ -33,6 +33,7 @@ mod overkill;
 mod pline_opts;
 pub mod plotters;
 mod props;
+mod terrain;
 pub use props::MatchProps;
 mod qselect;
 mod selecttools;
@@ -204,6 +205,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(survey::specs());
         v.extend(imageattach::specs());
         v.extend(mapgrid::specs());
+        v.extend(terrain::specs());
         v.extend(table::specs());
         v.extend(tolerance::specs());
         v.extend(constraints::specs());
