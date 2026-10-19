@@ -42,7 +42,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(
                 "{centerline?: handle of a polyline or line, points?: [[x, y], ...] (the centerline when no handle), interval?: distance between \
                  sections (default: a round number giving about 10), width?: distance covered on each side (default: a tenth of the length), \
-                 leftWidth?, rightWidth?, name?: a centerline made with ALIGNMENT (\"Line 1A\"), gridEvery?: draw horizontal lines at every this much elevation (true: a round number), step?: spacing of the samples across (default: a hundredth of the width), vScale?: vertical \
+                 leftWidth?, rightWidth?, name?: a centerline made with ALIGNMENT (\"Line 1A\"), vGridEvery?: draw vertical lines every this much distance from the centerline, labelled under the section (true: a round number), gridEvery?: draw horizontal lines at every this much elevation (true: a round number), step?: spacing of the samples across (default: a hundredth of the width), vScale?: vertical \
                  exaggeration (default 1), columns?: sections per row of the sheet (default 3), at?: [x, y] top left of the sheet (default: \
                  right of the drawing), textHeight?, handles?: [3DFACE triangles] (default: the TIN layer, else a TIN is built from the points), \
                  plan?: true (draw the section lines), layerPrefix?: \"XS\"} → {stations, sections, datum}",
@@ -259,6 +259,12 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
     let prefix = layer_name("xsection", str_param(p, "layerPrefix").unwrap_or("XS"))?;
     let plan = bool_or(p, "plan", true);
     // Horizontal lines at every `gridEvery` of elevation (true: a round number).
+    // Vertical lines at every `vGridEvery` of offset from the centerline (true: a round number).
+    let vgrid: Option<Option<f64>> = match p.get("vGridEvery") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(None),
+        Some(_) => Some(size_param("xsection", p, "vGridEvery", false)?),
+    };
     let grid: Option<Option<f64>> = match p.get("gridEvery") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
         Some(Value::Bool(true)) => Some(None),
@@ -318,6 +324,12 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
     let vstep = nice_spacing(range);
     let datum = ((zmin - 0.1 * range) / vstep).floor() * vstep;
     let grid_step = grid.map(|g| g.unwrap_or(vstep));
+    let vgrid_step = vgrid.map(|g| g.unwrap_or_else(|| nice_spacing(span)));
+    if let Some(g) = vgrid_step
+        && !(0.0..300.0).contains(&(span / g))
+    {
+        return Err(bad("xsection", "too many vertical lines: use a larger `vGridEvery`"));
+    }
     if let Some(g) = grid_step
         && !(0.0..300.0).contains(&((zmax - datum) / g))
     {
@@ -350,6 +362,7 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
         })
     };
     let text = |q: Vec2, t: &str, h: f64| make_text(s, q, t, h, 0.0, (cadcraft_doc::HAlign::Left, cadcraft_doc::VAlign::Baseline));
+    let text_below = |q: Vec2, t: &str, h: f64| make_text(s, q, t, h, 0.0, (cadcraft_doc::HAlign::Center, cadcraft_doc::VAlign::Top));
     let mut items: Vec<(&str, EntityKind)> = Vec::new();
     for (k, sec) in secs.iter().enumerate() {
         let (col, row) = (k % columns, k / columns);
@@ -366,6 +379,19 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
             polyline(vec![top, Vec2::new(top.x + cw, top.y), Vec2::new(top.x + cw, top.y - ch), Vec2::new(top.x, top.y - ch)], true),
         ));
         items.push((&l_frame, seg(Vec2::new(xl, base), Vec2::new(xr, base))));
+        if let Some(g) = vgrid_step {
+            // Offsets from the centerline: lines up to the top of the ground, distances under the baseline.
+            let decimals = if g.fract() == 0.0 { 0 } else { 1 };
+            let top_y = base + (zmax - datum) * vscale;
+            let (kl, kr) = ((left / g).floor() as i64, (right / g).floor() as i64);
+            for k in -kl..=kr {
+                let x = x0 + left + k as f64 * g;
+                if k != 0 {
+                    items.push((&l_grid, seg(Vec2::new(x, base), Vec2::new(x, top_y))));
+                }
+                items.push((&l_text, text_below(Vec2::new(x, base - th * 0.4), &format!("{:.decimals$}", (k as f64 * g).abs()), th)));
+            }
+        }
         if let Some(g) = grid_step {
             let decimals = if g.fract() == 0.0 { 0 } else { 2 };
             for k in 1..=(((zmax - datum) / g).floor() as usize) {
@@ -377,9 +403,9 @@ fn run_xsection(s: &mut Session, p: &Value) -> Result<Value> {
         }
         items.push((&l_cl, seg(Vec2::new(x0 + left, base), Vec2::new(x0 + left, top.y - pad * 0.5))));
         items.push((&l_text, text(Vec2::new(top.x + pad, top.y - pad * 0.6), &label, th * 1.4)));
-        items.push((&l_text, text(Vec2::new(top.x + th * 0.5, base - th * 1.6), &format!("Datum {datum:.2}"), th)));
-        items.push((&l_text, text(Vec2::new(xl, base - th * 3.2), &format!("L {left:.1}"), th)));
-        items.push((&l_text, text(Vec2::new(xr - th * 6.0, base - th * 3.2), &format!("R {right:.1}"), th)));
+        items.push((&l_text, text(Vec2::new(top.x + th * 0.5, base - th * 2.8), &format!("Datum {datum:.2}"), th)));
+        items.push((&l_text, text(Vec2::new(xl, base - th * 4.4), &format!("L {left:.1}"), th)));
+        items.push((&l_text, text(Vec2::new(xr - th * 6.0, base - th * 4.4), &format!("R {right:.1}"), th)));
         let mut run: Vec<Vec2> = Vec::new();
         for (j, z) in sec.z.iter().enumerate() {
             match z {

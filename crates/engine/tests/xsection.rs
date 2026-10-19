@@ -110,3 +110,25 @@ fn centerlines_are_named_and_sections_cut_along_them_with_horizontal_lines() {
     s2.execute("xsection", &json!({ "name": "Line 1A", "interval": 40 })).unwrap();
     assert_eq!(layer_count(&s2, "XS-GRID"), 0);
 }
+
+#[test]
+fn vertical_lines_mark_the_distance_across() {
+    let mut s = plane();
+    s.execute("alignment", &json!({ "points": [[10, 50], [90, 50]] })).unwrap();
+    s.execute("xsection", &json!({ "name": "Line 1A", "interval": 40, "width": 10, "vGridEvery": 5 })).unwrap();
+    // Three sections; offsets -10, -5, 0, 5, 10: four lines (the centerline has its own) and five labels.
+    assert_eq!(layer_count(&s, "XS-GRID"), 3 * 4);
+    let labels: Vec<String> = s
+        .doc()
+        .unwrap()
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Text(t) if e.common.layer == "XS-TEXT" && t.value.chars().all(|c| c.is_ascii_digit()) => Some(t.value.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.iter().filter(|l| l.as_str() == "10").count(), 6, "{labels:?}");
+    assert!(s.execute("xsection", &json!({ "name": "Line 1A", "vGridEvery": 1e-9 })).is_err());
+    assert!(s.execute("xsection", &json!({ "name": "Line 1A", "vGridEvery": -2 })).is_err());
+}

@@ -599,6 +599,8 @@ struct XsForm {
     columns: u32,
     grid: bool,
     grid_every: String,
+    vgrid: bool,
+    vgrid_every: String,
     draw: bool,
 }
 
@@ -613,6 +615,8 @@ impl Default for XsForm {
             columns: 3,
             grid: true,
             grid_every: String::new(),
+            vgrid: true,
+            vgrid_every: String::new(),
             draw: false,
         }
     }
@@ -646,6 +650,12 @@ fn xs_params(f: &XsForm) -> Result<Value, String> {
         match positive(&f.grid_every).map_err(|()| bad_field("Horizontal line every"))? {
             Some(v) => m.insert("gridEvery".into(), json!(v)),
             None => m.insert("gridEvery".into(), json!(true)),
+        };
+    }
+    if f.vgrid {
+        match positive(&f.vgrid_every).map_err(|()| bad_field("Vertical line every"))? {
+            Some(v) => m.insert("vGridEvery".into(), json!(v)),
+            None => m.insert("vGridEvery".into(), json!(true)),
         };
     }
     Ok(Value::Object(m))
@@ -695,6 +705,12 @@ pub fn xsection(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             ui.end_row();
             ui.label(crate::tl!("Horizontal line every"));
             ui.add_enabled_ui(f.grid, |ui| edit(ui, &mut f.grid_every, true));
+            ui.end_row();
+            ui.label(crate::tl!("Vertical lines (distance across)"));
+            ui.checkbox(&mut f.vgrid, "");
+            ui.end_row();
+            ui.label(crate::tl!("Vertical line every"));
+            ui.add_enabled_ui(f.vgrid, |ui| edit(ui, &mut f.vgrid_every, true));
             ui.end_row();
         },
         |app, f| {
@@ -757,8 +773,11 @@ mod tests {
         let f = XsForm { name: "Line 1A".into(), grid_every: "2.5".into(), interval: "50".into(), ..XsForm::default() };
         let p = xs_params(&f).unwrap_or_default();
         assert_eq!((p["gridEvery"].clone(), p["interval"].clone()), (json!(2.5), json!(50.0)));
-        let f = XsForm { name: "L".into(), grid: false, ..XsForm::default() };
-        assert!(xs_params(&f).unwrap_or_default().get("gridEvery").is_none());
+        assert_eq!(xs_params(&XsForm { name: "L".into(), ..XsForm::default() }).unwrap_or_default()["vGridEvery"], json!(true));
+        let f = XsForm { name: "L".into(), vgrid_every: "10".into(), ..XsForm::default() };
+        assert_eq!(xs_params(&f).unwrap_or_default()["vGridEvery"], json!(10.0));
+        let f = XsForm { name: "L".into(), grid: false, vgrid: false, ..XsForm::default() };
+        assert!(xs_params(&f).unwrap_or_default().get("gridEvery").is_none() && xs_params(&f).unwrap_or_default().get("vGridEvery").is_none());
         let f = XsForm { name: "L".into(), grid_every: "-1".into(), ..XsForm::default() };
         assert!(xs_params(&f).is_err());
     }
