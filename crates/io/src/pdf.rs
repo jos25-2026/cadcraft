@@ -601,6 +601,7 @@ fn content_stream(
     clip_pt: &Bounds2,
     layers: &[u32],
     texts: &std::collections::HashMap<u32, (usize, &cadcraft_render::PlotText)>,
+    images: &[(usize, &cadcraft_render::ImagePlacement)],
 ) -> (String, Vec<u8>) {
     let marked: std::collections::HashSet<u32> = layers.iter().copied().collect();
     let white = Rgb(255, 255, 255);
@@ -630,6 +631,10 @@ fn content_stream(
     // The transparency (percent) marks are drawn with, and those used on the page.
     let mut alpha: u8 = 0;
     let mut alphas: Vec<u8> = Vec::new();
+    // Pictures first: they sit under the line work. `Im<k>` is the page's k-th image.
+    for (k, im) in images {
+        draw_image(&mut c, &mut alphas, *k, im, map);
+    }
     for (i, p) in list.prims.iter().enumerate() {
         let want = list.prim_layers.get(i).copied().filter(|l| marked.contains(l));
         let text = u32::try_from(i).ok().and_then(|i| texts.get(&i));
@@ -759,6 +764,71 @@ fn content_stream(
     }
     c.push_str("Q\n");
     (c, alphas)
+}
+
+/// Draw picture `/Im<k>` placed as `im` says: its clip polygon, its fade as a transparency, and
+/// the matrix taking the unit square to the picture's frame on the page.
+fn draw_image(c: &mut String, alphas: &mut Vec<u8>, k: usize, im: &cadcraft_render::ImagePlacement, map: &Map) {
+    let o = map.pt(im.origin);
+    let w = map.pt(im.origin + im.u * im.size.x) - o;
+    let h = map.pt(im.origin + im.v * im.size.y) - o;
+    if ![o.x, o.y, w.x, w.y, h.x, h.y].iter().all(|v| v.is_finite()) {
+        return;
+    }
+    c.push_str("q\n");
+    if im.clip.len() >= 3 && im.clip.iter().all(|q| q.is_finite()) {
+        for (i, q) in im.clip.iter().enumerate() {
+            pt(c, map.pt(*q));
+            c.push_str(if i == 0 { " m\n" } else { " l\n" });
+        }
+        c.push_str("h W n\n");
+    }
+    if im.alpha < 255 {
+        let t = u8::try_from(100 - u32::from(im.alpha) * 100 / 255).unwrap_or(100).min(cadcraft_render::MAX_TRANSPARENCY);
+        let _ = writeln!(c, "/T{t} gs");
+        if !alphas.contains(&t) {
+            alphas.push(t);
+        }
+    }
+    for v in [w.x, w.y, h.x, h.y, o.x, o.y] {
+        num(c, v);
+        c.push(' ');
+    }
+    let _ = writeln!(c, "cm\n/Im{k} Do\nQ");
+}
+
+/// Longest side of an embedded picture, in pixels (a survey orthophoto is shrunk to this).
+const PDF_IMAGE_SIDE: u32 = 4096;
+/// JPEG quality of embedded pictures.
+const PDF_IMAGE_QUALITY: u8 = 88;
+/// Pictures embedded per page, and in all, at most.
+const MAX_PAGE_IMAGES: usize = 64;
+const MAX_IMAGE_BYTES: usize = 256 << 20;
+
+/// The body of an image XObject for the file at `path`: the picture shrunk to
+/// [`PDF_IMAGE_SIDE`] and JPEG-coded, on white where it is transparent. `None` when the file
+/// can't be read as a picture.
+fn image_xobject(path: &str) -> Option<Vec<u8>> {
+    let (w, h, rgba) = cadcraft_render::image_layer::display_rgba(path, PDF_IMAGE_SIDE)?;
+    let n = usize::try_from(w).ok()?.checked_mul(usize::try_from(h).ok()?)?;
+    if w == 0 || h == 0 || rgba.len() != n.checked_mul(4)? {
+        return None;
+    }
+    // The pixels are premultiplied: over white paper, colour + (255 - alpha).
+    let mut rgb = Vec::with_capacity(n * 3);
+    for px in rgba.chunks_exact(4) {
+        if let [r, g, b, a] = px {
+            let back = 255 - *a;
+            rgb.extend([r.saturating_add(back), g.saturating_add(back), b.saturating_add(back)]);
+        }
+    }
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, PDF_IMAGE_QUALITY).encode(&rgb, w, h, image::ExtendedColorType::Rgb8).ok()?;
+    Some(stream(
+        &jpeg,
+        false,
+        &format!(" /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode"),
+    ))
 }
 
 /// The page resources' graphics states for transparencies `alphas` (percent): `/T<percent>`
@@ -896,11 +966,33 @@ fn assemble(d: &Drawing, pages: &[SheetPage], fonts: &fonts::Fonts, o: &PdfOptio
     let mut ocgs: Vec<(u32, usize)> = Vec::new();
     let mut kids = Vec::new();
     // Page dictionaries are completed once the fonts are written: (page, its fonts, the rest).
-    let mut page_dicts: Vec<(usize, Vec<usize>, String, String, String)> = Vec::new();
+    let mut page_dicts: Vec<(usize, Vec<usize>, String, String, String, Vec<usize>)> = Vec::new();
+    // Embedded pictures by file (None: unreadable), shared by the pages that show them.
+    let mut image_ids: std::collections::HashMap<&str, Option<usize>> = std::collections::HashMap::new();
+    let mut image_bytes = 0usize;
     for p in pages {
         let page = objs.reserve();
         let texts = fonts.texts(&p.list);
-        let (marks, alphas) = content_stream(&p.list, &p.map, &p.clip_pt, &p.layers, &texts);
+        let mut xobjects: Vec<usize> = Vec::new();
+        let mut drawn: Vec<(usize, &cadcraft_render::ImagePlacement)> = Vec::new();
+        for im in p.list.images.iter().filter(|im| im.alpha > 0).take(MAX_PAGE_IMAGES) {
+            let id = *image_ids.entry(im.path.as_str()).or_insert_with(|| {
+                if image_bytes >= MAX_IMAGE_BYTES {
+                    return None;
+                }
+                let body = image_xobject(&im.path)?;
+                image_bytes = image_bytes.saturating_add(body.len());
+                Some(objs.add(body))
+            });
+            if let Some(id) = id {
+                let k = xobjects.iter().position(|x| *x == id).unwrap_or_else(|| {
+                    xobjects.push(id);
+                    xobjects.len() - 1
+                });
+                drawn.push((k, im));
+            }
+        }
+        let (marks, alphas) = content_stream(&p.list, &p.map, &p.clip_pt, &p.layers, &texts, &drawn);
         let content = objs.add(stream(marks.as_bytes(), o.compress, ""));
         let mut used: Vec<usize> = texts.values().map(|(f, _)| *f).collect();
         used.sort_unstable();
@@ -931,16 +1023,20 @@ fn assemble(d: &Drawing, pages: &[SheetPage], fonts: &fonts::Fonts, o: &PdfOptio
         let mut mb = String::new();
         pt(&mut mb, p.media);
         let annots = if annots.is_empty() { String::new() } else { format!(" /Annots [{}]", refs(annots)) };
-        page_dicts.push((page, used, props, ext_gstates(&alphas), format!("/MediaBox [0 0 {mb}] /Contents {content} 0 R{annots}")));
+        page_dicts.push((page, used, props, ext_gstates(&alphas), format!("/MediaBox [0 0 {mb}] /Contents {content} 0 R{annots}"), xobjects));
         kids.push(page);
     }
     let font_ids = if fonts.is_empty() { Vec::new() } else { fonts.write(&mut objs, o.compress) };
-    for (page, used, props, gstates, rest) in page_dicts {
+    for (page, used, props, gstates, rest, xobjects) in page_dicts {
         let mut res = String::new();
         if !props.is_empty() {
             let _ = write!(res, " /Properties <<{props} >>");
         }
         res.push_str(&gstates);
+        if !xobjects.is_empty() {
+            let x: Vec<String> = xobjects.iter().enumerate().map(|(k, id)| format!("/Im{k} {id} 0 R")).collect();
+            let _ = write!(res, " /XObject << {} >>", x.join(" "));
+        }
         let f: Vec<String> = used.iter().filter_map(|i| Some(format!("/F{i} {} 0 R", font_ids.get(*i)?))).collect();
         if !f.is_empty() {
             let _ = write!(res, " /Font << {} >>", f.join(" "));
