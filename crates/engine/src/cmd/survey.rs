@@ -32,7 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["ptimport", "importsurvey"])
             .params(
                 "{path | text, format?: \"PNEZD\" (letters P N E Z D, X, Y), textHeight?: 1, decimals?: 2, \
-                 layerPrefix?: \"SURVEY\", showNumber?: true, showElevation?: true, showDescription?: true, symbol?: true}",
+                 layerPrefix?: \"SURVEY\", layerByCode?: false (points of each description code on their own layer SURVEY-PTS-CODE), showNumber?: true, showElevation?: true, showDescription?: true, symbol?: true}",
             )
             .interactive(|_| Ok(Box::new(ImportM::default()))),
     ]
@@ -205,6 +205,33 @@ fn parse_points(text: &str, cols: &[Col]) -> Parsed {
     out
 }
 
+/// Most code layers one import makes (a file with a different description on every point).
+const MAX_CODE_LAYERS: usize = 200;
+
+/// The layer for a point with description `desc`: `base-CODE`, the code being the first word of
+/// the description (upper case, odd characters turned into `_`). Points without a code, and codes
+/// beyond `MAX_CODE_LAYERS`, stay on `base`.
+fn code_layer(base: &str, desc: &str, seen: &mut std::collections::BTreeSet<String>) -> String {
+    let code: String = desc
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(32)
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c.to_uppercase().next().unwrap_or('_') } else { '_' })
+        .collect();
+    if code.is_empty() {
+        return base.to_string();
+    }
+    let layer = format!("{base}-{code}");
+    if seen.contains(&layer) || seen.len() < MAX_CODE_LAYERS {
+        seen.insert(layer.clone());
+        layer
+    } else {
+        base.to_string()
+    }
+}
+
 fn layer_prefix(p: &Value) -> Result<String> {
     let raw = str_param(p, "layerPrefix").unwrap_or("SURVEY").trim();
     if raw.is_empty() || raw.chars().count() > 64 || raw.chars().any(|c| c.is_control() || "<>/\\\":;?*|=`".contains(c)) {
@@ -310,13 +337,17 @@ fn run_import(s: &mut Session, p: &Value) -> Result<Value> {
 
     let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     let mut texts = 0usize;
+    let by_code = bool_or(p, "layerByCode", false);
+    let mut code_layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for sp in &parsed.points {
         let z = sp.elev.unwrap_or(0.0);
         let at = Vec3::new(sp.east, sp.north, z);
         min = [min[0].min(sp.east), min[1].min(sp.north)];
         max = [max[0].max(sp.east), max[1].max(sp.north)];
         let d = s.doc_mut()?;
-        d.add(&space, on(&layers[0]), EntityKind::Point(Point { p: at, angle: 0.0 }))?;
+        let point_layer = if by_code { code_layer(&layers[0], &sp.desc, &mut code_layers) } else { layers[0].clone() };
+        d.ensure_layer(&point_layer);
+        d.add(&space, on(&point_layer), EntityKind::Point(Point { p: at, angle: 0.0 }))?;
         // Number above, elevation beside the point, description below, all left aligned.
         let x = sp.east + gap;
         let mut put = |layer: &str, y: f64, value: String| -> Result<()> {
@@ -354,6 +385,7 @@ fn run_import(s: &mut Session, p: &Value) -> Result<Value> {
         "skippedLines": parsed.skipped.iter().take(MAX_REPORTED_SKIPS).collect::<Vec<_>>(),
         "truncated": parsed.truncated,
         "layers": layers,
+        "codeLayers": code_layers,
         "bounds": { "min": min, "max": max },
         "message": msg,
     }))

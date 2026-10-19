@@ -31,7 +31,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("northarrow", "North Arrow...", run_north)
             .alias(&["northsymbol"])
             .menu(&["Insert", "North Arrow..."])
-            .params("{at?: [x, y] (default: the top right of the images or drawing), size?: diameter, rotation?: degrees counter-clockwise, layer?: \"NORTH\"}")
+            .params("{at?: [x, y] (default: the top right of the images or drawing), size?: diameter, rotation?: degrees counter-clockwise, style?: \"classic\" | \"full\" | \"simple\" | \"compass\", layer?: \"NORTH\"}")
             .interactive(|_| Ok(Box::new(NorthM::default()))),
     ]
 }
@@ -55,7 +55,7 @@ fn finite(v: f64) -> bool {
 }
 
 /// The extent to grid: the attached images, or the whole drawing.
-fn default_extent(s: &Session) -> Result<Bounds2> {
+pub(super) fn default_extent(s: &Session) -> Result<Bounds2> {
     let d = s.doc()?;
     let mut images = Bounds2::EMPTY;
     let mut all = Bounds2::EMPTY;
@@ -119,7 +119,7 @@ fn extent_param(p: &Value) -> Result<Option<Bounds2>> {
 }
 
 /// A round interval (1, 2 or 5 × a power of ten) that divides `span` into about five cells.
-fn nice_spacing(span: f64) -> f64 {
+pub(super) fn nice_spacing(span: f64) -> f64 {
     let raw = (span / 5.0).max(f64::MIN_POSITIVE);
     let pow = 10f64.powf(raw.log10().floor());
     let m = raw / pow;
@@ -354,25 +354,46 @@ fn run_north(s: &mut Session, p: &Value) -> Result<Value> {
     new_layer(s.doc_mut()?, &layer, 7);
     let com = Common { layer, color: Color::ByLayer, ..base };
 
+    let style = str_param(p, "style").unwrap_or("classic").to_ascii_lowercase();
     let r = size / 2.0;
     // Points are given upright (north = +y) about the centre, then turned by the rotation.
     let at = |x: f64, y: f64| c + Vec2::new(x * r, y * r).rotate(rot);
-    let tip = at(0.0, 0.92);
-    let left = at(-0.38, -0.72);
-    let right = at(0.38, -0.72);
-    let notch = at(0.0, -0.36);
-    let solid = EntityKind::Solid(Solid { corners: [v3(tip), v3(left), v3(notch), v3(notch)] });
-    let outline = EntityKind::LwPolyline(LwPolyline {
-        vertices: [tip, right, notch, left].into_iter().map(PolyVertex::new).collect(),
-        closed: true,
-        const_width: 0.0,
-        elevation: 0.0,
-        plinegen: false,
-    });
+    let poly = |pts: &[(f64, f64)]| {
+        EntityKind::LwPolyline(LwPolyline {
+            vertices: pts.iter().map(|(x, y)| PolyVertex::new(at(*x, *y))).collect(),
+            closed: true,
+            const_width: 0.0,
+            elevation: 0.0,
+            plinegen: false,
+        })
+    };
+    let tri = |a: (f64, f64), b: (f64, f64), k: (f64, f64)| {
+        let (a, b, k) = (v3(at(a.0, a.1)), v3(at(b.0, b.1)), v3(at(k.0, k.1)));
+        EntityKind::Solid(Solid { corners: [a, b, k, k] })
+    };
     let ring = EntityKind::Circle(cadcraft_doc::Circle { center: v3(c), radius: r });
+    let line = |a: (f64, f64), b: (f64, f64)| EntityKind::Line(Line { a: v3(at(a.0, a.1)), b: v3(at(b.0, b.1)) });
+    let mut kinds = match style.as_str() {
+        // The default: a ring, a kite half filled (surveyor's style) and the letter.
+        "classic" | "half" => {
+            vec![ring, poly(&[(0.0, 0.92), (0.38, -0.72), (0.0, -0.36), (-0.38, -0.72)]), tri((0.0, 0.92), (-0.38, -0.72), (0.0, -0.36))]
+        }
+        // A kite filled solid, no ring.
+        "full" | "solid" => vec![tri((0.0, 0.92), (-0.38, -0.72), (0.0, -0.36)), tri((0.0, 0.92), (0.38, -0.72), (0.0, -0.36))],
+        // A staff with an arrowhead.
+        "simple" | "arrow" => vec![line((0.0, -0.9), (0.0, 0.5)), tri((0.0, 0.95), (-0.28, 0.45), (0.28, 0.45))],
+        // A four-point compass star in a ring, the north point half filled.
+        "compass" | "star" => vec![
+            ring,
+            poly(&[(0.0, 0.95), (0.18, 0.18), (0.95, 0.0), (0.18, -0.18), (0.0, -0.95), (-0.18, -0.18), (-0.95, 0.0), (-0.18, 0.18)]),
+            tri((0.0, 0.95), (-0.18, 0.18), (0.0, 0.0)),
+        ],
+        _ => return Err(bad("northarrow", "`style` must be \"classic\", \"full\", \"simple\" or \"compass\"")),
+    };
     let letter = make_text(s, at(0.0, 1.12), "N", r * 0.55, rot, (HAlign::Center, VAlign::Bottom));
+    kinds.push(letter);
     let d = s.doc_mut()?;
-    for k in [ring, outline, solid, letter] {
+    for k in kinds {
         d.add(&space, com.clone(), k)?;
     }
     s.echo("north arrow inserted".to_string());

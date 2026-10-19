@@ -27,6 +27,7 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         "earthwork" => crate::surveydlg::earthwork(app, ctx, &mut open),
         "mapgrid" => crate::surveydlg::mapgrid(app, ctx, &mut open),
         "northarrow" => crate::surveydlg::northarrow(app, ctx, &mut open),
+        "trees" => crate::surveydlg::trees(app, ctx, &mut open),
         "about" => about(ctx, &mut open),
         "preview" => crate::exchange::dialog(app, ctx, &mut open),
         "commands" => commands(app, ctx, &mut open),

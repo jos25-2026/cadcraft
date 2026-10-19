@@ -124,6 +124,7 @@ struct PointsForm {
     number: bool,
     elevation: bool,
     description: bool,
+    by_code: bool,
     browse: bool,
 }
 
@@ -138,6 +139,7 @@ impl Default for PointsForm {
             number: true,
             elevation: true,
             description: true,
+            by_code: false,
             browse: false,
         }
     }
@@ -153,6 +155,9 @@ fn points_params(f: &PointsForm) -> Result<Value, &'static str> {
     put(&mut m, "textHeight", &f.text_height, "Text height", positive)?;
     m.insert("decimals".into(), json!(f.decimals));
     put_text(&mut m, "layerPrefix", &f.prefix);
+    if f.by_code {
+        m.insert("layerByCode".into(), json!(true));
+    }
     // Labels stay automatic (off for a big grid of points) unless one is switched off here.
     for (key, on) in [("showNumber", f.number), ("showElevation", f.elevation), ("showDescription", f.description)] {
         if !on {
@@ -187,6 +192,9 @@ pub fn points(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             ui.end_row();
             ui.label(crate::tl!("Layer prefix"));
             edit(ui, &mut f.prefix, false);
+            ui.end_row();
+            ui.label(crate::tl!("Separate layer for each code"));
+            ui.checkbox(&mut f.by_code, "");
             ui.end_row();
             ui.label(crate::tl!("Point numbers"));
             ui.checkbox(&mut f.number, "");
@@ -345,11 +353,18 @@ pub fn mapgrid(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
 
 // ---- North Arrow ----
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct NorthForm {
     size: String,
     rotation: String,
     layer: String,
+    style: String,
+}
+
+impl Default for NorthForm {
+    fn default() -> Self {
+        NorthForm { size: String::new(), rotation: String::new(), layer: String::new(), style: "classic".into() }
+    }
 }
 
 fn north_params(f: &NorthForm) -> Result<Value, &'static str> {
@@ -357,6 +372,7 @@ fn north_params(f: &NorthForm) -> Result<Value, &'static str> {
     put(&mut m, "size", &f.size, "Size", positive)?;
     put(&mut m, "rotation", &f.rotation, "Rotation", number)?;
     put_text(&mut m, "layer", &f.layer);
+    m.insert("style".into(), json!(f.style));
     Ok(Value::Object(m))
 }
 
@@ -368,6 +384,18 @@ pub fn northarrow(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
         "northarrow_dialog",
         crate::tl!("North Arrow"),
         |ui, f| {
+            ui.label(crate::tl!("Template"));
+            ui.horizontal(|ui| {
+                for (key, label) in [
+                    ("classic", crate::tl!("Classic")),
+                    ("full", crate::tl!("Solid")),
+                    ("simple", crate::tl!("Arrow")),
+                    ("compass", crate::tl!("Compass")),
+                ] {
+                    ui.selectable_value(&mut f.style, key.to_string(), label);
+                }
+            });
+            ui.end_row();
             ui.label(crate::tl!("Size"));
             edit(ui, &mut f.size, true);
             ui.end_row();
@@ -380,6 +408,113 @@ pub fn northarrow(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
         },
         |_, _| {},
         |app, f| run(app, "northarrow", north_params(f), false),
+    );
+}
+
+// ---- Plant Trees ----
+
+#[derive(Clone)]
+struct TreesForm {
+    /// Layers holding POINTs: name, how many, chosen.
+    layers: Vec<(String, usize, bool)>,
+    size: String,
+    style: String,
+    layer: String,
+    refresh: bool,
+}
+
+impl Default for TreesForm {
+    fn default() -> Self {
+        TreesForm { layers: Vec::new(), size: String::new(), style: "round".into(), layer: String::new(), refresh: false }
+    }
+}
+
+/// The layers of the drawing that hold POINT objects, with their counts. Layers of imported survey
+/// points per code (`SURVEY-PTS-TREE`) come first.
+fn point_layers(app: &CadApp) -> Vec<(String, usize, bool)> {
+    let Ok(d) = app.session.doc() else { return Vec::new() };
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for e in d.model.iter() {
+        if matches!(e.kind, cadcraft_doc::EntityKind::Point(_)) {
+            *counts.entry(e.common.layer.clone()).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(String, usize, bool)> = counts.into_iter().map(|(n, c)| (n.clone(), c, n.to_uppercase().contains("TREE"))).collect();
+    v.sort_by_key(|(n, _, _)| !n.to_uppercase().contains("-PTS-"));
+    v
+}
+
+fn trees_params(f: &TreesForm) -> Result<Value, String> {
+    let chosen: Vec<&str> = f.layers.iter().filter(|(_, _, on)| *on).map(|(n, _, _)| n.as_str()).collect();
+    if chosen.is_empty() {
+        return Err(crate::tl!("Choose at least one layer with points.").to_string());
+    }
+    let mut m = Map::new();
+    m.insert("layers".into(), json!(chosen));
+    put(&mut m, "size", &f.size, "Crown size", positive).map_err(bad_field)?;
+    m.insert("style".into(), json!(f.style));
+    put_text(&mut m, "layer", &f.layer);
+    Ok(Value::Object(m))
+}
+
+pub fn trees(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+    // Closed and reopened (a frame passed without the dialog): start fresh and look at the drawing again.
+    let id = egui::Id::new(("trees_dialog", "form"));
+    let seen_id = egui::Id::new(("trees_dialog", "seen"));
+    let frame = ctx.cumulative_frame_nr();
+    let last = ctx.data_mut(|d| d.get_temp::<u64>(seen_id)).unwrap_or(0);
+    let refresh = ctx.data_mut(|d| d.get_temp::<TreesForm>(id)).is_none_or(|f| f.refresh);
+    if frame > last + 2 || refresh {
+        let mut f = if refresh { ctx.data_mut(|d| d.get_temp::<TreesForm>(id)).unwrap_or_default() } else { TreesForm::default() };
+        let old = std::mem::take(&mut f.layers);
+        f.layers =
+            point_layers(app).into_iter().map(|(n, c, on)| (n.clone(), c, old.iter().find(|(o, _, _)| *o == n).map_or(on, |(_, _, k)| *k))).collect();
+        f.refresh = false;
+        ctx.data_mut(|d| d.insert_temp(id, f));
+    }
+    ctx.data_mut(|d| d.insert_temp(seen_id, frame));
+    shell::<TreesForm>(
+        app,
+        ctx,
+        open,
+        "trees_dialog",
+        crate::tl!("Plant Trees"),
+        |ui, f| {
+            ui.label(crate::tl!("Tree layers"));
+            ui.vertical(|ui| {
+                if f.layers.is_empty() {
+                    ui.label(crate::tl!("No points yet: import survey points first."));
+                }
+                egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                    for (name, count, on) in &mut f.layers {
+                        ui.checkbox(on, format!("{name} ({count})"));
+                    }
+                });
+                f.refresh = ui.small_button(crate::tl!("Refresh")).clicked();
+            });
+            ui.end_row();
+            ui.label(crate::tl!("Template"));
+            ui.horizontal(|ui| {
+                for (key, label) in
+                    [("round", crate::tl!("Round")), ("cloud", crate::tl!("Cloud")), ("conifer", crate::tl!("Conifer")), ("palm", crate::tl!("Palm"))]
+                {
+                    ui.selectable_value(&mut f.style, key.to_string(), label);
+                }
+            });
+            ui.end_row();
+            ui.label(crate::tl!("Crown size"));
+            edit(ui, &mut f.size, true);
+            ui.end_row();
+            ui.label(crate::tl!("Layer"));
+            edit(ui, &mut f.layer, false);
+            ui.end_row();
+        },
+        |_, _| {},
+        |app, f| {
+            let p = trees_params(f)?;
+            app.run("trees", p)?;
+            Ok(())
+        },
     );
 }
 
@@ -404,6 +539,17 @@ mod tests {
         let n = north_params(&NorthForm { rotation: "-30".into(), ..NorthForm::default() }).unwrap_or_default();
         assert_eq!(n["rotation"], json!(-30.0));
         assert_eq!(north_params(&NorthForm { size: "x".into(), ..NorthForm::default() }), Err("Size"));
+    }
+
+    #[test]
+    fn trees_need_a_chosen_layer_and_a_good_size() {
+        let mut f = TreesForm { layers: vec![("SURVEY-PTS-TREE".into(), 4, false)], ..TreesForm::default() };
+        assert!(trees_params(&f).is_err(), "nothing chosen");
+        f.layers[0].2 = true;
+        let p = trees_params(&f).unwrap_or_default();
+        assert_eq!((p["layers"].clone(), p["style"].as_str(), p.get("size")), (json!(["SURVEY-PTS-TREE"]), Some("round"), None));
+        f.size = "-2".into();
+        assert!(trees_params(&f).is_err());
     }
 
     #[test]

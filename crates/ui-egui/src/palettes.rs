@@ -49,6 +49,8 @@ pub const DRAFTING: &[(&str, &[Tool], &[Tool])] = &[
             (Icon::Earthwork, "earthwork", "Earthwork Volumes"),
             (Icon::MapGrid, "mapgrid", "Map Grid"),
             (Icon::NorthArrow, "northarrow", "North Arrow"),
+            (Icon::CrossSection, "xsection", "Cross Sections"),
+            (Icon::Tree, "trees", "Plant Trees"),
         ],
         &[],
     ),

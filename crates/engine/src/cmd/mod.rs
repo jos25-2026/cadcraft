@@ -43,9 +43,11 @@ mod spline_opts;
 mod survey;
 mod table;
 mod tolerance;
+mod trees;
 mod trimextend;
 mod utility;
 mod view;
+mod xsection;
 
 pub mod curves;
 pub mod helpers;
@@ -204,6 +206,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(options::specs());
         v.extend(utility::specs());
         v.extend(survey::specs());
+        v.extend(trees::specs());
+        v.extend(xsection::specs());
         v.extend(imageattach::specs());
         v.extend(earthwork::specs());
         v.extend(mapgrid::specs());

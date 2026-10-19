@@ -56,6 +56,8 @@ pub enum Icon {
     NorthArrow,
     ImportPoints,
     OrthoImage,
+    Tree,
+    CrossSection,
     Table,
     Text,
     MText,
@@ -469,6 +471,22 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             pen.poly(&[(3.0, 17.0), (8.0, 9.0), (15.0, 8.0), (21.0, 14.0)], false, a);
             pen.poly(&[(6.0, 19.0), (10.0, 13.0), (15.0, 12.5), (19.0, 17.0)], false, b);
             pen.fill_c(12.0, 6.0, 1.5, a);
+        }
+        CrossSection => {
+            pen.poly(&[(3.0, 14.0), (7.0, 11.0), (10.0, 15.0), (14.0, 9.0), (17.0, 13.0), (21.0, 10.0)], false, a);
+            pen.l(3.0, 20.0, 21.0, 20.0);
+            pen.l(12.0, 4.0, 12.0, 20.0);
+            pen.l(6.0, 4.0, 6.0, 20.0);
+            pen.l(18.0, 4.0, 18.0, 20.0);
+        }
+        Tree => {
+            for (x, y) in [(12.0, 5.0), (17.5, 9.0), (17.5, 15.0), (12.0, 17.0), (6.5, 15.0), (6.5, 9.0)] {
+                pen.c(x, y, 3.2, b);
+            }
+            pen.fill_c(12.0, 11.0, 5.0, Tokens::get().chrome);
+            pen.c(12.0, 11.0, 5.0, a);
+            pen.fill_c(12.0, 11.0, 1.2, a);
+            pen.l(12.0, 20.0, 12.0, 22.0);
         }
         OrthoImage => {
             pen.rect(3.0, 4.0, 18.0, 16.0, b);
