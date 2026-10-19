@@ -203,3 +203,22 @@ fn image_survives_dwg_save_and_reopen() {
     // The DWG bridge keeps everything but the definition's resolution unit.
     assert_eq!(Image { resolution_units: img.resolution_units, ..b }, img);
 }
+
+#[test]
+fn a_windows_extended_length_path_is_saved_as_a_plain_one() {
+    // `\\?\D:\…` (what canonicalize gives on Windows) is not understood by other programs, which
+    // then show the path as text instead of the picture; drawings saved with it are mended on save.
+    let mut d = cadcraft_io::read_dxf(foreign_dxf().as_bytes()).unwrap();
+    for e in d.model.iter().map(|e| e.handle).collect::<Vec<_>>() {
+        if let Some(mut ent) = d.model.get(e).map(|x| (**x).clone())
+            && let EntityKind::Image(i) = &mut ent.kind
+        {
+            i.path = r"\\?\D:\Map Hui\Ortho.jpg".into();
+            d.model.replace(ent);
+        }
+    }
+    let saved = cadcraft_io::write_dxf(&d);
+    let objs = section(&saved, "OBJECTS");
+    let (_, def) = objs.iter().find(|(k, _)| k == "IMAGEDEF").unwrap();
+    assert_eq!(val(def, 1), r"D:\Map Hui\Ortho.jpg");
+}

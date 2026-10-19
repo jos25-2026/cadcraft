@@ -167,7 +167,8 @@ fn run_attach(s: &mut Session, p: &Value) -> Result<Value> {
     let scale = size_param("imageattach", p, "scale", false)?;
     let rotation = f64_or(p, "rotation", 0.0).to_radians();
     // Absolute, so the drawing finds the image wherever it is opened from.
-    let stored = std::fs::canonicalize(path).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
+    let stored =
+        cadcraft_doc::plain_file_path(&std::fs::canonicalize(path).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string()));
 
     let world = if insert.is_none() && scale.is_none() { read_world(p, path)? } else { None };
     let (origin, u, v) = match &world {

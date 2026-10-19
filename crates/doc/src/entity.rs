@@ -878,6 +878,18 @@ pub struct Image {
     #[serde(default)]
     pub resolution_units: u8,
 }
+/// A file path other programs can open: Windows' extended-length prefix (`\\?\D:\x`, which
+/// `std::fs::canonicalize` returns there) is removed, `\\?\UNC\server\share` becomes
+/// `\\server\share`. Any other path is returned unchanged.
+pub fn plain_file_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
 fn image_display() -> u16 {
     7
 }

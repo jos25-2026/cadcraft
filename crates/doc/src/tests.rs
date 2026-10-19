@@ -564,3 +564,12 @@ fn space_names_its_tab() {
     assert_eq!(p.layout(), Some("Sheet A"));
     assert_eq!(p.tab_name(), "Sheet A");
 }
+
+#[test]
+fn plain_file_path_drops_the_windows_extended_length_prefix() {
+    assert_eq!(plain_file_path(r"\\?\D:\Map Hui\Ortho.jpg"), r"D:\Map Hui\Ortho.jpg");
+    assert_eq!(plain_file_path(r"\\?\UNC\server\share\Ortho.jpg"), r"\\server\share\Ortho.jpg");
+    assert_eq!(plain_file_path(r"D:\Map\Ortho.jpg"), r"D:\Map\Ortho.jpg");
+    assert_eq!(plain_file_path("/home/a/Ortho.jpg"), "/home/a/Ortho.jpg");
+    assert_eq!(plain_file_path(""), "");
+}

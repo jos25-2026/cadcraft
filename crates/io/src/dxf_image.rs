@@ -159,7 +159,7 @@ fn fill(store: &mut EntityStore, by_image: &HashMap<Handle, &Def>) {
         let Some(def) = by_image.get(&h) else { continue };
         store.modify(h, |e| {
             if let EntityKind::Image(i) = &mut e.kind {
-                i.path = def.path.clone();
+                i.path = cadcraft_doc::plain_file_path(&def.path);
                 i.name = def.name.clone();
                 if let Some(p) = def.pixel_size {
                     i.pixel_size = p;
@@ -235,7 +235,7 @@ pub(crate) fn plan<'a>(entities: impl Iterator<Item = &'a cadcraft_doc::Entity>,
                 p.defs.push(PlannedDef {
                     handle: next(),
                     name,
-                    path: i.path.clone(),
+                    path: cadcraft_doc::plain_file_path(&i.path),
                     size: i.size,
                     pixel_size: i.pixel_size,
                     units: i.resolution_units,
