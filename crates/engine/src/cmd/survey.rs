@@ -15,6 +15,8 @@ use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 /// Most points imported by one command (hostile or mistaken files).
 const MAX_POINTS: usize = 500_000;
+/// Files with more points than this are imported without text labels unless asked for.
+const LABEL_LIMIT: usize = 2000;
 /// Largest point file read, in bytes.
 const MAX_FILE: usize = 64 * 1024 * 1024;
 /// Longest point number or description kept, in characters.
@@ -40,6 +42,8 @@ pub fn specs() -> Vec<CommandSpec> {
 #[derive(Default)]
 struct ImportM {
     path: Option<String>,
+    /// The column order the file looks like it has.
+    guess: Option<&'static str>,
 }
 
 impl Interactive for ImportM {
@@ -51,7 +55,7 @@ impl Interactive for ImportM {
             None => Prompt::new("Enter the point file path (CSV or TXT)", Accept::TEXT),
             Some(_) => {
                 let mut p = Prompt::new("Column order (P number, N north, E east, Z elevation, D description)", Accept::TEXT);
-                p.default = Some("PNEZD".to_string());
+                p.default = Some(self.guess.unwrap_or("PNEZD").to_string());
                 p
             }
         }
@@ -66,10 +70,11 @@ impl Interactive for ImportM {
             if text.is_empty() {
                 return Ok(Step::Done);
             }
+            self.guess = read_text(&json!({ "path": text })).ok().map(|t| sniff_format(&t));
             self.path = Some(text);
             return Ok(Step::Continue);
         };
-        let format = if text.is_empty() { "PNEZD".to_string() } else { text };
+        let format = if text.is_empty() { self.guess.unwrap_or("PNEZD").to_string() } else { text };
         let r = run_import(s, &json!({ "path": path, "format": format }))?;
         if let Some(m) = r.get("message").and_then(Value::as_str) {
             s.echo(m.to_string());
@@ -231,8 +236,25 @@ fn read_text(p: &Value) -> Result<String> {
     Err(bad("importpoints", "paths are not available on the web; pass `text`"))
 }
 
+/// The column order of a file, from its first lines: three numbers per line is an X Y Z file (a
+/// DEM export), anything else the common point-number order.
+fn sniff_format(text: &str) -> &'static str {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let delim = detect_delimiter(text);
+    let first = text.lines().map(str::trim).filter(|l| !l.is_empty() && !is_comment(l)).take(20).find(|l| {
+        let f = split_fields(l, 64, delim);
+        f.len() >= 3 && f.iter().all(|x| number(x).is_some())
+    });
+    match first {
+        Some(l) if split_fields(l, 64, delim).len() == 3 => "XYZ",
+        _ => "PNEZD",
+    }
+}
+
 fn run_import(s: &mut Session, p: &Value) -> Result<Value> {
-    let cols = parse_format(str_param(p, "format").unwrap_or("PNEZD")).map_err(|m| bad("importpoints", m))?;
+    let text = read_text(p)?;
+    let format = str_param(p, "format").map_or_else(|| sniff_format(&text), |f| f);
+    let cols = parse_format(format).map_err(|m| bad("importpoints", m))?;
     let height = size_param("importpoints", p, "textHeight", false)?.unwrap_or(1.0);
     let decimals = match p.get("decimals") {
         None | Some(Value::Null) => 2,
@@ -241,9 +263,11 @@ fn run_import(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let prefix = layer_prefix(p)?;
-    let (show_no, show_elev, show_desc) = (bool_or(p, "showNumber", true), bool_or(p, "showElevation", true), bool_or(p, "showDescription", true));
-
-    let parsed = parse_points(&read_text(p)?, &cols);
+    let parsed = parse_points(&text, &cols);
+    // A grid of thousands of points (a DEM) is shown as points only: labels would bury the drawing.
+    let labels = parsed.points.len() <= LABEL_LIMIT;
+    let (show_no, show_elev, show_desc) =
+        (bool_or(p, "showNumber", labels), bool_or(p, "showElevation", labels), bool_or(p, "showDescription", labels));
     if parsed.points.is_empty() {
         let hint =
             if parsed.skipped.is_empty() { String::new() } else { format!(" ({} lines could not be read: check `format`)", parsed.skipped.len()) };
@@ -312,7 +336,10 @@ fn run_import(s: &mut Session, p: &Value) -> Result<Value> {
     }
 
     let n = parsed.points.len();
-    let mut msg = format!("{n} survey points imported");
+    let mut msg = format!("{n} survey points imported (columns {format})");
+    if !labels && !(show_no || show_elev || show_desc) {
+        msg.push_str(", without labels because there are so many");
+    }
     if !parsed.skipped.is_empty() {
         msg.push_str(&format!(", {} lines skipped", parsed.skipped.len()));
     }

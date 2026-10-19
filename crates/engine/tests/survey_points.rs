@@ -99,3 +99,31 @@ fn reads_a_file_by_path() {
     assert_eq!(r["imported"], 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_dem_xyz_file_is_recognised_and_imported_as_points_only() {
+    use cadcraft_doc::EntityKind;
+    // 5 m DEM export: easting, northing, elevation separated by runs of spaces; 120 × 100 points.
+    let mut t = String::new();
+    for j in 0..100 {
+        for i in 0..120 {
+            t.push_str(&format!(
+                "{:.2}      {:.2}      {:.3}\n",
+                482_528.73 + f64::from(i) * 5.0,
+                1_965_265.27 - f64::from(j) * 5.0,
+                441.0 + f64::from(i % 7) * 0.1
+            ));
+        }
+    }
+    let mut s = Session::new();
+    let r = s.execute("importpoints", &json!({ "text": t })).unwrap();
+    assert_eq!(r["imported"], json!(12_000));
+    assert_eq!(r["labels"], json!(0), "no text labels for a dense grid: {r}");
+    let first = s.doc().unwrap().model.iter().find_map(|e| if let EntityKind::Point(p) = &e.kind { Some(p.p) } else { None }).unwrap();
+    assert_eq!((first.x, first.y), (482_528.73, 1_965_265.27), "east first, then north");
+    assert!((first.z - 441.0).abs() < 1e-9);
+    // The surface can be built and contoured from it.
+    let tin = s.execute("tin", &json!({})).unwrap();
+    assert_eq!(tin["triangles"], json!(2 * 119 * 99));
+    s.execute("contour", &json!({ "interval": 0.2 })).unwrap();
+}
