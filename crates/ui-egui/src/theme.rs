@@ -352,6 +352,11 @@ pub fn install_fonts(ctx: &egui::Context, language: &str) {
                 .enumerate()
                 .map(|(i, bytes)| (format!("system-cjk-{i}"), std::sync::Arc::new(egui::FontData::from_owned(bytes)))),
         );
+        // ไทย: an installed Thai face in every interface language, since drawing, layer and
+        // title-block text can be Thai whatever the interface shows (egui's faces have no Thai).
+        if let Some(bytes) = thai_font().and_then(|p| read_capped(p, MAX_UI_FONT_BYTES)) {
+            added.push(("system-thai".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes))));
+        }
         // العربية: an installed Arabic face after the Latin ones (egui's bundled faces carry no
         // Arabic glyphs), for the Arabic interface.
         if language == "ar"
@@ -427,6 +432,39 @@ pub fn cjk_font() -> Option<&'static std::path::Path> {
                         "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
                         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
                         "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                    ]
+                };
+                candidates.iter().map(std::path::PathBuf::from).find(|p| p.is_file())
+            })
+            .as_deref()
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
+}
+
+/// An installed font with Thai glyphs; fonts are never bundled (only looked for where the OS or
+/// common packages put them). Checked once.
+pub fn thai_font() -> Option<&'static std::path::Path> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static FOUND: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+        FOUND
+            .get_or_init(|| {
+                let candidates: &[&str] = if cfg!(target_os = "macos") {
+                    &["/System/Library/Fonts/Supplemental/Ayuthaya.ttf", "/System/Library/Fonts/Supplemental/Thonburi.ttc", "/System/Library/Fonts/Thonburi.ttc"]
+                } else if cfg!(windows) {
+                    &["C:\\Windows\\Fonts\\LeelawUI.ttf", "C:\\Windows\\Fonts\\leelawui.ttf", "C:\\Windows\\Fonts\\tahoma.ttf", "C:\\Windows\\Fonts\\segoeui.ttf"]
+                } else {
+                    &[
+                        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+                        "/usr/share/fonts/noto/NotoSansThai-Regular.ttf",
+                        "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.ttf",
+                        "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+                        "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+                        "/usr/share/fonts/truetype/tlwg/Umpush.ttf",
+                        "/usr/share/fonts/truetype/thai/Garuda.ttf",
+                        "/usr/share/fonts/TTF/Garuda.ttf",
+                        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                     ]
                 };
                 candidates.iter().map(std::path::PathBuf::from).find(|p| p.is_file())
