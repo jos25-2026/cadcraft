@@ -924,3 +924,35 @@ fn cancelled_build_stops_early() {
     assert!(!crate::hatch::pattern_lines_until(&drawing, &h, &loops, 0.0, None, None).is_empty());
     assert!(crate::hatch::pattern_lines_until(&drawing, &h, &loops, 0.0, None, set.as_deref()).is_empty());
 }
+
+/// A drawing big enough to be built in parallel chunks keeps its pictures (the joined list once
+/// dropped them, so a survey drawing with thousands of points lost its aerial photo).
+#[test]
+fn big_drawings_built_in_parallel_keep_their_images() {
+    let path = std::env::temp_dir().join(format!("cc-par-image-{}.png", std::process::id()));
+    image::RgbImage::from_pixel(4, 4, image::Rgb([10, 200, 30])).save(&path).unwrap();
+    let mut d = Drawing::new_imperial();
+    d.add(
+        &Space::Model,
+        Common::default(),
+        EntityKind::Image(cadcraft_doc::Image {
+            size: cadcraft_geom::Vec2::new(4.0, 4.0),
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    for i in 0..3000 {
+        let x = f64::from(i);
+        d.add(
+            &Space::Model,
+            Common::default(),
+            EntityKind::Line(cadcraft_doc::Line { a: Vec3::new(x, 0.0, 0.0), b: Vec3::new(x, 1.0, 0.0) }),
+        )
+        .unwrap();
+    }
+    let l = build(&d, &Space::Model, &Options { tolerance: 0.01, ..Default::default() });
+    let _ = std::fs::remove_file(&path);
+    assert!(l.prims.len() >= 3000, "every line is drawn");
+    assert_eq!(l.images.len(), 1, "the picture survives the parallel build");
+}
