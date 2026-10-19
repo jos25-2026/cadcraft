@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .menu(&["Tools", "Terrain", "Contours..."])
             .params(
                 "{interval?: contour interval (default: a round number giving about 10 levels), base?: 0, majorEvery?: 5, \
-                 labels?: true, textHeight?, decimals?, handles?: [3DFACE triangles] (default: the TIN layer, else a TIN is \
+                 smooth?: 0 to 4 rounds of corner rounding (default 2, 0 = straight lines), labels?: true, textHeight?, decimals?, handles?: [3DFACE triangles] (default: the TIN layer, else a TIN is \
                  built from the points), layerPrefix?: \"CONTOUR\"}",
             )
             .interactive(|_| Ok(Box::new(ContourM::default()))),
@@ -339,6 +339,38 @@ fn nice_interval(range: f64) -> f64 {
     step * pow
 }
 
+/// Rounds the corners of a polyline by cutting each one off (Chaikin), `rounds` times. An open
+/// line keeps its end points; a ring stays closed. The curve stays inside the original lines'
+/// outline, so neighbouring contours do not cross each other.
+fn smooth_line(pts: &[Vec2], closed: bool, rounds: u32) -> Vec<Vec2> {
+    let mut cur = pts.to_vec();
+    for _ in 0..rounds {
+        let n = cur.len();
+        if !(3..=200_000).contains(&n) {
+            break;
+        }
+        let segs = if closed { n } else { n - 1 };
+        let mut out = Vec::with_capacity(segs * 2 + 2);
+        if !closed && let Some(first) = cur.first() {
+            out.push(*first);
+        }
+        for i in 0..segs {
+            let (Some(a), Some(b)) = (cur.get(i), cur.get((i + 1) % n)) else { break };
+            if closed || i > 0 {
+                out.push(Vec2::new(0.75 * a.x + 0.25 * b.x, 0.75 * a.y + 0.25 * b.y));
+            }
+            if closed || i + 1 < segs {
+                out.push(Vec2::new(0.25 * a.x + 0.75 * b.x, 0.25 * a.y + 0.75 * b.y));
+            }
+        }
+        if !closed && let Some(last) = cur.last() {
+            out.push(*last);
+        }
+        cur = out;
+    }
+    cur
+}
+
 fn polyline_length(pts: &[Vec2], closed: bool) -> f64 {
     let mut len: f64 = pts.windows(2).map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y)).sum();
     if closed && let (Some(a), Some(b)) = (pts.first(), pts.last()) {
@@ -394,6 +426,10 @@ fn run_contour(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some(Value::Null) => 5,
         Some(v) => v.as_u64().filter(|n| (1..=1000).contains(n)).ok_or_else(|| bad("contour", "`majorEvery` must be 1 to 1000"))?,
     } as i64;
+    let smooth = match p.get("smooth") {
+        None | Some(Value::Null) => 2,
+        Some(v) => v.as_u64().filter(|n| *n <= 4).and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad("contour", "`smooth` must be 0 to 4"))?,
+    };
     let labels = bool_or(p, "labels", true);
     let decimals = match p.get("decimals") {
         None | Some(Value::Null) => {
@@ -429,7 +465,8 @@ fn run_contour(s: &mut Session, p: &Value) -> Result<Value> {
     let major = Common { layer: l_major.clone(), color: Color::Index(10), lineweight: Lineweight::Mm100(35), ..basec.clone() };
     let text = Common { layer: l_text.clone(), color: Color::Index(10), ..basec };
     let (mut n_major, mut n_minor, mut n_labels) = (0usize, 0usize, 0usize);
-    for line in &lines {
+    for raw in &lines {
+        let line = &ContourLine { pts: smooth_line(&raw.pts, raw.closed, smooth), ..raw.clone() };
         let level = base + line.level as f64 * interval;
         let is_major = line.level.rem_euclid(major_every) == 0;
         let pl = EntityKind::LwPolyline(LwPolyline {
@@ -530,7 +567,9 @@ impl Interactive for TinM {
 struct ContourM {
     interval: Option<f64>,
     auto: Option<f64>,
-    asked_major: bool,
+    major: Option<u64>,
+    /// 0 interval, 1 major spacing, 2 smoothing.
+    step: u8,
 }
 
 impl Interactive for ContourM {
@@ -546,15 +585,17 @@ impl Interactive for ContourM {
         Ok(Step::Continue)
     }
     fn prompt(&self, _s: &Session) -> Prompt {
-        if self.interval.is_none() && !self.asked_major {
-            let mut p = Prompt::new("Contour interval in drawing units", Accept::TEXT);
-            p.default = self.auto.map(|v| v.to_string());
-            p
-        } else {
-            let mut p = Prompt::new("Draw a major (thick, labelled) contour every how many contours", Accept::TEXT);
-            p.default = Some("5".into());
-            p
-        }
+        let mut p = match self.step {
+            0 => {
+                let mut p = Prompt::new("Contour interval in drawing units", Accept::TEXT);
+                p.default = self.auto.map(|v| v.to_string());
+                return p;
+            }
+            1 => Prompt::new("Draw a major (thick, labelled) contour every how many contours", Accept::TEXT),
+            _ => Prompt::new("Smoothing of the curves, 0 (straight lines) to 4", Accept::TEXT),
+        };
+        p.default = Some(if self.step == 1 { "5" } else { "2" }.into());
+        p
     }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         let text = match i {
@@ -562,34 +603,54 @@ impl Interactive for ContourM {
             Input::Enter => String::new(),
             _ => return Ok(Step::Cancel),
         };
-        if !self.asked_major {
-            if !text.is_empty() {
-                match number(&text) {
-                    Some(v) => self.interval = Some(v),
-                    None => {
-                        s.echo("Enter a positive number.".to_string());
-                        return Ok(Step::Continue);
+        match self.step {
+            0 => {
+                if !text.is_empty() {
+                    match number(&text) {
+                        Some(v) => self.interval = Some(v),
+                        None => {
+                            s.echo("Enter a positive number.".to_string());
+                            return Ok(Step::Continue);
+                        }
                     }
                 }
+                self.step = 1;
+                Ok(Step::Continue)
             }
-            self.asked_major = true;
-            return Ok(Step::Continue);
-        }
-        let mut params = json!({});
-        if let Some(v) = self.interval {
-            params["interval"] = json!(v);
-        }
-        if !text.is_empty() {
-            match text.parse::<u64>() {
-                Ok(n) if (1..=1000).contains(&n) => params["majorEvery"] = json!(n),
-                _ => {
-                    s.echo("Enter a whole number from 1 to 1000.".to_string());
-                    return Ok(Step::Continue);
+            1 => {
+                if !text.is_empty() {
+                    match text.parse::<u64>() {
+                        Ok(n) if (1..=1000).contains(&n) => self.major = Some(n),
+                        _ => {
+                            s.echo("Enter a whole number from 1 to 1000.".to_string());
+                            return Ok(Step::Continue);
+                        }
+                    }
                 }
+                self.step = 2;
+                Ok(Step::Continue)
+            }
+            _ => {
+                let mut params = json!({});
+                if let Some(v) = self.interval {
+                    params["interval"] = json!(v);
+                }
+                if let Some(n) = self.major {
+                    params["majorEvery"] = json!(n);
+                }
+                if !text.is_empty() {
+                    match text.parse::<u64>() {
+                        Ok(n) if n <= 4 => params["smooth"] = json!(n),
+                        _ => {
+                            s.echo("Enter a whole number from 0 to 4.".to_string());
+                            return Ok(Step::Continue);
+                        }
+                    }
+                }
+                run_contour(s, &params)?;
+                Ok(Step::Done)
             }
         }
-        run_contour(s, &params)?;
-        Ok(Step::Done)
     }
 }
 
@@ -633,6 +694,20 @@ mod tests {
         let t = [tri((0.0, 0.0, 0.0), (10.0, 0.0, 10.0), (0.0, 10.0, 0.0)), tri((10.0, 0.0, 10.0), (10.0, 10.0, 10.0), (0.0, 10.0, 0.0))];
         let lines = contour_lines(&t, 0.0, 5.0).unwrap();
         assert!(lines.iter().any(|l| l.level == 1), "{lines:?}");
+    }
+
+    #[test]
+    fn smoothing_rounds_corners_and_keeps_the_ends() {
+        let line = [Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0)];
+        let s = smooth_line(&line, false, 2);
+        assert!(s.len() > line.len());
+        assert_eq!(s.first(), line.first());
+        assert_eq!(s.last(), line.last());
+        // The corner point (10, 0) is cut off.
+        assert!(s.iter().all(|p| (p.x - 10.0).abs() > 1e-9 || p.y.abs() > 1e-9));
+        let ring = [Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 10.0)];
+        assert_eq!(smooth_line(&ring, true, 1).len(), 8);
+        assert_eq!(smooth_line(&ring, true, 0), ring.to_vec());
     }
 
     #[test]

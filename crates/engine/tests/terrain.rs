@@ -73,6 +73,21 @@ fn contours_follow_the_hill() {
 }
 
 #[test]
+fn smoothing_adds_vertices_and_zero_keeps_straight_lines() {
+    let mut s = Session::new();
+    hill(&mut s);
+    let verts = |s: &Session| -> usize {
+        s.doc().unwrap().model.iter().map(|e| if let EntityKind::LwPolyline(p) = &e.kind { p.vertices.len() } else { 0 }).sum()
+    };
+    s.execute("contour", &json!({ "interval": 5, "smooth": 0 })).unwrap();
+    let straight = verts(&s);
+    s.undo().unwrap();
+    s.execute("contour", &json!({ "interval": 5 })).unwrap();
+    assert!(verts(&s) > straight * 2, "smoothed by default");
+    assert!(s.execute("contour", &json!({ "smooth": 9 })).is_err());
+}
+
+#[test]
 fn contour_builds_a_tin_when_there_is_none() {
     let mut s = Session::new();
     hill(&mut s);
@@ -93,6 +108,7 @@ fn prompts_ask_the_interval_and_major_spacing() {
     s.start("contour").unwrap();
     s.input(Input::Text("10".into())).unwrap();
     s.input(Input::Text("3".into())).unwrap();
+    s.input(Input::Text("1".into())).unwrap(); // smoothing
     assert!(s.running.is_none());
     assert!(count(&s, |k| matches!(k, EntityKind::LwPolyline(_))) >= 3);
 }
