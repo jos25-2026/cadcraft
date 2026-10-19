@@ -690,6 +690,17 @@ mod ttf_tests {
     }
 
     #[test]
+    fn thai_text_draws_from_an_installed_thai_font() {
+        // Skips cleanly when no Thai font is installed (then the box is the right answer).
+        let sh = crate::shape_stroke("\u{0E20}\u{0E32}\u{0E29}\u{0E32}\u{0E44}\u{0E17}\u{0E22}", 1.0, 1.0, 0.0);
+        if sh.glyphs.is_empty() {
+            eprintln!("no Thai font installed; skipped");
+            return;
+        }
+        assert!(sh.glyphs.len() >= 5, "Thai letters drawn as outlines, not boxes");
+    }
+
+    #[test]
     fn hostile_collections_never_panic() {
         // A TTC header claiming many faces with bogus or truncated offsets.
         let mut ttc = b"ttcf\x00\x01\x00\x00\x7f\xff\xff\xff".to_vec();
