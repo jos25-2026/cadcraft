@@ -55,6 +55,7 @@ pub enum Icon {
     MapGrid,
     NorthArrow,
     ImportPoints,
+    OrthoImage,
     Table,
     Text,
     MText,
@@ -468,6 +469,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             pen.poly(&[(3.0, 17.0), (8.0, 9.0), (15.0, 8.0), (21.0, 14.0)], false, a);
             pen.poly(&[(6.0, 19.0), (10.0, 13.0), (15.0, 12.5), (19.0, 17.0)], false, b);
             pen.fill_c(12.0, 6.0, 1.5, a);
+        }
+        OrthoImage => {
+            pen.rect(3.0, 4.0, 18.0, 16.0, b);
+            pen.poly(&[(3.0, 18.0), (9.0, 11.0), (13.0, 15.0), (16.0, 12.0), (21.0, 18.0)], false, a);
+            pen.fill_c(16.0, 8.0, 1.8, a);
         }
         Earthwork => {
             pen.poly(&[(3.0, 14.0), (9.0, 8.0), (15.0, 15.0), (21.0, 9.0)], false, a);
