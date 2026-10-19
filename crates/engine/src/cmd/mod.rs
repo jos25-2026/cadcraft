@@ -23,6 +23,7 @@ mod inquiry;
 mod layer;
 mod layout;
 mod lisp;
+mod mapgrid;
 mod mleader_content;
 mod mleader_edit;
 mod modify;
@@ -202,6 +203,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(utility::specs());
         v.extend(survey::specs());
         v.extend(imageattach::specs());
+        v.extend(mapgrid::specs());
         v.extend(table::specs());
         v.extend(tolerance::specs());
         v.extend(constraints::specs());
