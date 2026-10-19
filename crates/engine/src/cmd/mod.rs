@@ -37,6 +37,7 @@ mod props;
 mod terrain;
 pub use props::MatchProps;
 mod qselect;
+mod road;
 mod selecttools;
 mod settings;
 mod spline_opts;
@@ -208,6 +209,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(survey::specs());
         v.extend(trees::specs());
         v.extend(xsection::specs());
+        v.extend(road::specs());
         v.extend(imageattach::specs());
         v.extend(earthwork::specs());
         v.extend(mapgrid::specs());

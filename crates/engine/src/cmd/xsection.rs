@@ -122,15 +122,8 @@ fn line_of(s: &Session, h: Handle) -> Option<Vec<Vec2>> {
     let d = s.doc().ok()?;
     let pts: Vec<Vec2> = match &d.entity(h)?.kind {
         EntityKind::Line(l) => vec![Vec2::new(l.a.x, l.a.y), Vec2::new(l.b.x, l.b.y)],
-        EntityKind::LwPolyline(pl) => {
-            let mut v: Vec<Vec2> = pl.vertices.iter().map(|v| v.p).collect();
-            if pl.closed
-                && let Some(f) = v.first().copied()
-            {
-                v.push(f);
-            }
-            v
-        }
+        // Arcs (bulges) run as short chords, so stations and sections follow a curved alignment.
+        EntityKind::LwPolyline(pl) => cadcraft_geom::Polyline { vertices: pl.vertices.clone(), closed: pl.closed }.tessellate(0.005),
         EntityKind::Polyline3d(pl) => pl.points.iter().map(|p| Vec2::new(p.x, p.y)).collect(),
         _ => return None,
     };
@@ -138,7 +131,7 @@ fn line_of(s: &Session, h: Handle) -> Option<Vec<Vec2>> {
 }
 
 /// The layer of the centerline called `name`.
-fn centerline_layer(cmd: &str, name: &str) -> Result<String> {
+pub(super) fn centerline_layer(cmd: &str, name: &str) -> Result<String> {
     let name = name.trim();
     super::terrain::layer_name(cmd, &format!("{CENTERLINE_PREFIX}{name}"))
         .map_err(|_| bad(cmd, "a centerline name is 1 to 60 characters without < > / \\ \" : ; ? * | = `"))
@@ -156,7 +149,7 @@ fn named_line(s: &Session, name: &str) -> Result<Vec<Vec2>> {
 }
 
 /// `Line 1A`, `Line 2A`, ...: the first name no layer uses yet.
-fn next_name(s: &Session) -> String {
+pub(super) fn next_name(s: &Session) -> String {
     let used = |n: &str| s.doc().is_ok_and(|d| d.layers.iter().any(|l| l.name.eq_ignore_ascii_case(&format!("{CENTERLINE_PREFIX}{n}"))));
     (1..=100_000).map(|i| format!("Line {i}A")).find(|n| !used(n)).unwrap_or_else(|| "Line".into())
 }

@@ -50,6 +50,7 @@ pub const DRAFTING: &[(&str, &[Tool], &[Tool])] = &[
             (Icon::MapGrid, "mapgrid", "Map Grid"),
             (Icon::NorthArrow, "northarrow", "North Arrow"),
             (Icon::Centerline, "alignment", "Centerline"),
+            (Icon::RoadAlign, "roadalign", "Horizontal Alignment"),
             (Icon::CrossSection, "xsection", "Cross Sections"),
             (Icon::Tree, "trees", "Plant Trees"),
         ],
