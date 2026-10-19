@@ -21,6 +21,8 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.dock", "Arrange Panel", &[], None),
     ("ui.dock.reset", "Reset Panel Layout", &["Window", "Reset Panel Layout"], None),
     ("ui.open", "Open...", &[], Some("Cmd+O")),
+    ("ui.imageattach", "Raster Image...", &["Insert", "Raster Image..."], None),
+    ("ui.importpoints", "Survey Points...", &["Insert", "Survey Points..."], None),
     ("ui.newtemplate", "New from Template...", &["File", "New from Template..."], None),
     ("ui.saveas", "Save As...", &[], None),
     ("ui.sample", "Open Sample Drawing", &["Help", "Open Sample Drawing"], None),
@@ -151,6 +153,25 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
                 app.open_path(&p);
             }
             Ok(Value::Null)
+        }
+        // Browse for an aerial photo or scan and place it (a world file beside it sets the position).
+        "ui.imageattach" if no_path => {
+            let Some(path) = app.services.pick_file.as_ref().and_then(|f| f("image")) else { return Some(Ok(Value::Null)) };
+            let r = app.session.execute("imageattach", &json!({ "path": path })).map_err(|e| e.to_string());
+            if r.is_ok() {
+                // Show the photo: the view jumps to the drawing's extents.
+                let _ = app.session.execute("zoom.extents", &Value::Null);
+            }
+            return Some(r);
+        }
+        // Browse for a survey point file (CSV/TXT, columns P N E Z D) and draw its points.
+        "ui.importpoints" if no_path => {
+            let Some(path) = app.services.pick_file.as_ref().and_then(|f| f("points")) else { return Some(Ok(Value::Null)) };
+            let r = app.session.execute("importpoints", &json!({ "path": path })).map_err(|e| e.to_string());
+            if r.is_ok() {
+                let _ = app.session.execute("zoom.extents", &Value::Null);
+            }
+            return Some(r);
         }
         // Pick a template (.dwt or .dxf) and start a new drawing from it.
         "ui.newtemplate" => {
@@ -687,6 +708,7 @@ mod tests {
         let asked = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&asked);
         let services = Services {
+            pick_file: None,
             pick_open: None,
             pick_save: Some(Box::new(move |name: &str| {
                 log.borrow_mut().push(name.to_string());

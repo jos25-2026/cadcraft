@@ -12,6 +12,7 @@ fn app() -> (CadApp, Rc<Cell<u32>>) {
     let picks = Rc::new(Cell::new(0));
     let (a, b) = (picks.clone(), picks.clone());
     let services = Services {
+        pick_file: None,
         pick_open: Some(Box::new(move || {
             a.set(a.get() + 1);
             None
@@ -95,4 +96,23 @@ fn print_opens_the_plot_dialog_but_json_plot_never_does() {
     app.cmdline(r#"plot {"layout": "Model"}"#);
     assert!(app.ui.dialog.is_none());
     assert_eq!(picks.get(), 0);
+}
+
+#[test]
+fn insert_menu_browses_for_an_image_and_survey_points() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let asked = Rc::new(RefCell::new(Vec::<String>::new()));
+    let log = asked.clone();
+    let services = Services {
+        pick_file: Some(Box::new(move |kind: &str| {
+            log.borrow_mut().push(kind.to_string());
+            None
+        })),
+        ..Services::default()
+    };
+    let mut app = CadApp::new(Session::new(), services);
+    app.run("ui.imageattach", json!({})).unwrap();
+    app.run("ui.importpoints", json!({})).unwrap();
+    assert_eq!(*asked.borrow(), vec!["image".to_string(), "points".to_string()]);
 }

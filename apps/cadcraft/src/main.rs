@@ -128,6 +128,17 @@ pub fn install_io() {
 
 fn services() -> Services {
     Services {
+        pick_file: Some(Box::new(|kind: &str| {
+            let (label, exts): (&str, &[&str]) = match kind {
+                "image" => ("Images (PNG, JPEG, TIFF)", &["png", "jpg", "jpeg", "tif", "tiff", "bmp"]),
+                _ => ("Survey points (CSV, TXT)", &["csv", "txt", "pts", "xyz", "prn"]),
+            };
+            rfd::FileDialog::new()
+                .add_filter(i18n::t(label), exts)
+                .add_filter(i18n::t("All files"), &["*"])
+                .pick_file()
+                .map(|p| p.to_string_lossy().to_string())
+        })),
         pick_open: Some(Box::new(|| {
             rfd::FileDialog::new()
                 .add_filter(i18n::t("Drawings (DWG, DXF)"), &["dwg", "dxf", "dwt"])

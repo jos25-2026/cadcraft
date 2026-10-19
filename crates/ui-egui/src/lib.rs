@@ -187,6 +187,8 @@ impl Default for UiState {
 /// Host services (file pickers, clipboard) injected by the app so this crate stays portable.
 #[derive(Default)]
 pub struct Services {
+    /// Pick a file of a kind (`"image"` or `"points"`), through the system's open dialog.
+    pub pick_file: Option<Box<dyn Fn(&str) -> Option<String>>>,
     pub pick_open: Option<Box<dyn Fn() -> Option<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
 }
