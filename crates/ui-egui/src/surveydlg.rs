@@ -420,27 +420,35 @@ struct TreesForm {
     size: String,
     style: String,
     layer: String,
+    color: [u8; 3],
     refresh: bool,
 }
 
 impl Default for TreesForm {
     fn default() -> Self {
-        TreesForm { layers: Vec::new(), size: String::new(), style: "round".into(), layer: String::new(), refresh: false }
+        TreesForm { layers: Vec::new(), size: String::new(), style: "round".into(), layer: String::new(), color: [34, 139, 34], refresh: false }
     }
 }
 
-/// The layers of the drawing that hold POINT objects, with their counts. Layers of imported survey
-/// points per code (`SURVEY-PTS-TREE`) come first.
+/// Every layer of the drawing with the number of POINT objects on it. Layers of imported survey
+/// points per code (`SURVEY-PTS-TREE`) and ones named like trees start chosen; the layers holding
+/// points come first.
 fn point_layers(app: &CadApp) -> Vec<(String, usize, bool)> {
     let Ok(d) = app.session.doc() else { return Vec::new() };
-    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = d.layers.iter().map(|l| (l.name.clone(), 0)).collect();
     for e in d.model.iter() {
         if matches!(e.kind, cadcraft_doc::EntityKind::Point(_)) {
             *counts.entry(e.common.layer.clone()).or_default() += 1;
         }
     }
-    let mut v: Vec<(String, usize, bool)> = counts.into_iter().map(|(n, c)| (n.clone(), c, n.to_uppercase().contains("TREE"))).collect();
-    v.sort_by_key(|(n, _, _)| !n.to_uppercase().contains("-PTS-"));
+    let mut v: Vec<(String, usize, bool)> = counts
+        .into_iter()
+        .map(|(n, c)| {
+            let on = c > 0 && n.to_uppercase().contains("TREE");
+            (n, c, on)
+        })
+        .collect();
+    v.sort_by_key(|(n, c, _)| (*c == 0, !n.to_uppercase().contains("-PTS-")));
     v
 }
 
@@ -453,8 +461,52 @@ fn trees_params(f: &TreesForm) -> Result<Value, String> {
     m.insert("layers".into(), json!(chosen));
     put(&mut m, "size", &f.size, "Crown size", positive).map_err(bad_field)?;
     m.insert("style".into(), json!(f.style));
+    m.insert("color".into(), json!(f.color));
     put_text(&mut m, "layer", &f.layer);
     Ok(Value::Object(m))
+}
+
+/// A picture of a tree template, drawn like the symbol the command makes.
+fn tree_preview(p: &egui::Painter, rect: egui::Rect, style: &str, color: egui::Color32) {
+    use egui::{Pos2, Shape, Stroke};
+    let stroke = Stroke::new(1.5, color);
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.38;
+    let at = |x: f32, y: f32| Pos2::new(c.x + x * r, c.y - y * r);
+    let poly = |pts: Vec<Pos2>| p.add(Shape::closed_line(pts, stroke));
+    match style {
+        "cloud" => {
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                let bump = r * 0.3;
+                let centre = Pos2::new(c.x + a.cos() * (r - bump), c.y - a.sin() * (r - bump));
+                let pts: Vec<Pos2> = (0..=10)
+                    .map(|k| {
+                        let t = a - std::f32::consts::FRAC_PI_2 - 0.2 + k as f32 * (std::f32::consts::PI + 0.4) / 10.0;
+                        Pos2::new(centre.x + t.cos() * bump * 1.05, centre.y - t.sin() * bump * 1.05)
+                    })
+                    .collect();
+                p.add(Shape::line(pts, stroke));
+            }
+        }
+        "conifer" => {
+            poly(vec![at(0.0, 1.0), at(-0.87, -0.5), at(0.87, -0.5)]);
+            p.line_segment([at(0.0, 1.0), at(0.0, -0.5)], stroke);
+        }
+        "palm" => {
+            for i in 0..6 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_3;
+                let (u, w) = (egui::vec2(a.cos(), -a.sin()), egui::vec2(a.sin(), a.cos()));
+                poly(vec![c, c + u * (r * 0.5) + w * (r * 0.18), c + u * r, c + u * (r * 0.5) - w * (r * 0.18)]);
+            }
+        }
+        _ => {
+            p.circle_stroke(c, r, stroke);
+            p.line_segment([at(-0.15, 0.0), at(0.15, 0.0)], stroke);
+            p.line_segment([at(0.0, -0.15), at(0.0, 0.15)], stroke);
+        }
+    }
+    p.circle_stroke(c, r * 0.08, stroke);
 }
 
 pub fn trees(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
@@ -483,7 +535,7 @@ pub fn trees(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             ui.label(crate::tl!("Tree layers"));
             ui.vertical(|ui| {
                 if f.layers.is_empty() {
-                    ui.label(crate::tl!("No points yet: import survey points first."));
+                    ui.label(crate::tl!("No layers yet: import survey points first."));
                 }
                 egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
                     for (name, count, on) in &mut f.layers {
@@ -495,12 +547,29 @@ pub fn trees(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             ui.end_row();
             ui.label(crate::tl!("Template"));
             ui.horizontal(|ui| {
+                let color = egui::Color32::from_rgb(f.color[0], f.color[1], f.color[2]);
                 for (key, label) in
                     [("round", crate::tl!("Round")), ("cloud", crate::tl!("Cloud")), ("conifer", crate::tl!("Conifer")), ("palm", crate::tl!("Palm"))]
                 {
-                    ui.selectable_value(&mut f.style, key.to_string(), label);
+                    ui.vertical(|ui| {
+                        let (rect, resp) = ui.allocate_exact_size(vec2(64.0, 64.0), egui::Sense::click());
+                        let on = f.style == key;
+                        let fill = if on { ui.visuals().selection.bg_fill.gamma_multiply(0.5) } else { ui.visuals().extreme_bg_color };
+                        ui.painter().rect_filled(rect, 4.0, fill);
+                        if on || resp.hovered() {
+                            ui.painter().rect_stroke(rect, 4.0, ui.visuals().selection.stroke, egui::StrokeKind::Inside);
+                        }
+                        tree_preview(ui.painter(), rect, key, color);
+                        if resp.clicked() {
+                            f.style = key.to_string();
+                        }
+                        ui.label(label);
+                    });
                 }
             });
+            ui.end_row();
+            ui.label(crate::tl!("Color"));
+            ui.color_edit_button_srgb(&mut f.color);
             ui.end_row();
             ui.label(crate::tl!("Crown size"));
             edit(ui, &mut f.size, true);
@@ -548,6 +617,7 @@ mod tests {
         f.layers[0].2 = true;
         let p = trees_params(&f).unwrap_or_default();
         assert_eq!((p["layers"].clone(), p["style"].as_str(), p.get("size")), (json!(["SURVEY-PTS-TREE"]), Some("round"), None));
+        assert_eq!(p["color"], json!([34, 139, 34]));
         f.size = "-2".into();
         assert!(trees_params(&f).is_err());
     }

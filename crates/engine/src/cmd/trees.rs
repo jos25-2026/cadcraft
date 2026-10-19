@@ -19,7 +19,7 @@ const MAX_COORD: f64 = 1.0e12;
 pub fn specs() -> Vec<CommandSpec> {
     vec![CommandSpec::new("trees", "Plant Trees...", run_trees).alias(&["planttrees", "treesymbols"]).menu(&["Insert", "Trees..."]).params(
         "{layers: [names of the layers holding the POINTs, e.g. \"SURVEY-PTS-TREE\"], size?: crown diameter (default 5), \
-         style?: \"round\" | \"cloud\" | \"conifer\" | \"palm\" (default round), layer?: \"TREES\"} → {planted, layers}",
+         style?: \"round\" | \"cloud\" | \"conifer\" | \"palm\" (default round), color?: [r, g, b] | \"#rrggbb\" | colour index (default: the layer's), layer?: \"TREES\"} → {planted, layers}",
     )]
 }
 
@@ -35,6 +35,29 @@ fn poly(pts: Vec<Vec2>) -> EntityKind {
         elevation: 0.0,
         plinegen: false,
     })
+}
+
+/// `[r, g, b]`, `"#rrggbb"` or an AutoCAD colour index 1..=255; absent or null keeps the layer's colour.
+fn color_param(p: &Value) -> Result<cadcraft_color::Color> {
+    use cadcraft_color::{Color, Rgb};
+    let err = || bad("trees", "`color` must be [r, g, b], \"#rrggbb\" or a colour index 1 to 255");
+    match p.get("color") {
+        None | Some(Value::Null) => Ok(Color::ByLayer),
+        Some(Value::Number(n)) => n.as_u64().filter(|i| (1..=255).contains(i)).and_then(|i| u8::try_from(i).ok()).map(Color::Index).ok_or_else(err),
+        Some(Value::String(t)) => {
+            let h = t.trim().trim_start_matches('#');
+            if h.len() != 6 || !h.is_ascii() {
+                return Err(err());
+            }
+            let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map_err(|_| err());
+            Ok(Color::True(Rgb(c(0)?, c(2)?, c(4)?)))
+        }
+        Some(Value::Array(a)) if a.len() == 3 => {
+            let c = |i: usize| a[i].as_u64().and_then(|v| u8::try_from(v).ok()).ok_or_else(err);
+            Ok(Color::True(Rgb(c(0)?, c(1)?, c(2)?)))
+        }
+        _ => Err(err()),
+    }
 }
 
 /// The symbol for one tree of crown radius `r` centred on `c`.
@@ -100,6 +123,7 @@ fn run_trees(s: &mut Session, p: &Value) -> Result<Value> {
     if !["round", "cloud", "conifer", "palm"].contains(&style.as_str()) {
         return Err(bad("trees", "`style` must be \"round\", \"cloud\", \"conifer\" or \"palm\""));
     }
+    let color = color_param(p)?;
     let layer = super::terrain::layer_name("trees", str_param(p, "layer").unwrap_or("TREES"))?;
 
     let mut spots: Vec<Vec3> = Vec::new();
@@ -138,7 +162,7 @@ fn run_trees(s: &mut Session, p: &Value) -> Result<Value> {
             l.color = cadcraft_color::Color::Index(3);
         }
     }
-    let com = Common { layer: layer.clone(), color: cadcraft_color::Color::ByLayer, ..base };
+    let com = Common { layer: layer.clone(), color, ..base };
     let r = size / 2.0;
     let d = s.doc_mut()?;
     for pt in &spots {

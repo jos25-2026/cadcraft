@@ -58,3 +58,20 @@ fn north_arrow_styles() {
     }
     assert!(Session::new().execute("northarrow", &json!({ "at": [0, 0], "style": "fancy" })).is_err());
 }
+
+#[test]
+fn trees_take_a_colour() {
+    use cadcraft_color::{Color, Rgb};
+    for (v, want) in [(json!("#10a030"), Color::True(Rgb(16, 160, 48))), (json!([1, 2, 3]), Color::True(Rgb(1, 2, 3))), (json!(3), Color::Index(3))] {
+        let mut s = Session::new();
+        s.execute("importpoints", &json!({ "text": FILE, "layerByCode": true })).unwrap();
+        s.execute("trees", &json!({ "layers": ["SURVEY-PTS-TREE"], "color": v })).unwrap();
+        let d = s.doc().unwrap();
+        assert!(d.model.iter().filter(|e| e.common.layer == "TREES").all(|e| e.common.color == want), "{v}");
+    }
+    let mut s = Session::new();
+    s.execute("importpoints", &json!({ "text": FILE, "layerByCode": true })).unwrap();
+    for bad in [json!("red"), json!("#12345"), json!("#zzzzzz"), json!([1, 2]), json!([1, 2, 300]), json!(0), json!(256), json!(true)] {
+        assert!(s.execute("trees", &json!({ "layers": ["SURVEY-PTS-TREE"], "color": bad })).is_err(), "{bad}");
+    }
+}
