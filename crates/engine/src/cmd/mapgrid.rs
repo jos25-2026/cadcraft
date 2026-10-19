@@ -40,6 +40,16 @@ fn v3(p: Vec2) -> Vec3 {
     Vec3::new(p.x, p.y, 0.0)
 }
 
+/// Make layer `name` with colour index `color` when the drawing lacks it (an existing layer keeps
+/// its own colour).
+fn new_layer(d: &mut cadcraft_doc::Drawing, name: &str, color: u8) {
+    if d.ensure_layer(name)
+        && let Some(l) = d.layers.iter_mut().find(|l| l.name == name)
+    {
+        l.color = Color::Index(color);
+    }
+}
+
 fn finite(v: f64) -> bool {
     v.is_finite() && v.abs() <= MAX_COORD
 }
@@ -217,11 +227,12 @@ fn run_grid(s: &mut Session, p: &Value) -> Result<Value> {
     let base = s.current_common();
     {
         let d = s.doc_mut()?;
-        for l in [&l_grid, &l_frame, &l_text] {
-            d.ensure_layer(l);
+        for (l, c) in [(&l_grid, 8), (&l_frame, 7), (&l_text, 3)] {
+            new_layer(d, l, c);
         }
     }
-    let on = |layer: &str, color: u8| Common { layer: layer.to_string(), color: Color::Index(color), ..base.clone() };
+    // ByLayer, so the layers' colours (set when they are created) can be changed in the layer list.
+    let on = |layer: &str, _color: u8| Common { layer: layer.to_string(), color: Color::ByLayer, ..base.clone() };
     let mut count = 0usize;
     let mut add = |s: &mut Session, c: Common, k: EntityKind| -> Result<()> {
         s.doc_mut()?.add(&space, c, k)?;
@@ -340,8 +351,8 @@ fn run_north(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let space = s.space();
     let base = s.current_common();
-    s.doc_mut()?.ensure_layer(&layer);
-    let com = Common { layer, color: Color::Index(7), ..base };
+    new_layer(s.doc_mut()?, &layer, 7);
+    let com = Common { layer, color: Color::ByLayer, ..base };
 
     let r = size / 2.0;
     // Points are given upright (north = +y) about the centre, then turned by the rotation.

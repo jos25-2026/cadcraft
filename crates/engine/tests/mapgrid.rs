@@ -139,3 +139,17 @@ fn a_selected_object_frames_the_grid_at_once() {
     s.start("mapgrid").unwrap();
     assert!(s.prompt_text().contains("Grid spacing"), "{}", s.prompt_text());
 }
+
+#[test]
+fn grid_and_arrow_follow_their_layers_colours() {
+    use cadcraft_color::Color;
+    let mut s = Session::new();
+    s.execute("mapgrid", &json!({ "extent": [0, 0, 100, 100], "spacing": 50 })).unwrap();
+    s.execute("northarrow", &json!({ "at": [50, 50], "size": 10 })).unwrap();
+    let d = s.doc().unwrap();
+    assert!(d.model.iter().all(|e| e.common.color == Color::ByLayer), "recolouring a layer recolours its objects");
+    for (name, idx) in [("GRID-LINES", 8), ("GRID-FRAME", 7), ("GRID-TEXT", 3), ("NORTH", 7)] {
+        let l = d.layers.iter().find(|l| l.name == name).unwrap_or_else(|| panic!("layer {name}"));
+        assert_eq!(l.color, Color::Index(idx), "{name}");
+    }
+}
