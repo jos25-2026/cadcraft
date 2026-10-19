@@ -224,15 +224,16 @@ pub fn toolsets(app: &mut CadApp, ui: &mut egui::Ui) {
                     });
                     if !collapsed {
                         ui.add_space(4.0);
-                        // Large icons.
-                        if !large.is_empty() {
+                        // Large icons, 6 per row (a group with more wraps onto the next row).
+                        let shown: Vec<Tool> = large.iter().copied().filter(|(_, cmd, _)| !hidden(cmd)).collect();
+                        for (n, row) in shown.chunks(6).enumerate() {
+                            if n > 0 {
+                                ui.add_space(4.0);
+                            }
                             ui.horizontal(|ui| {
                                 ui.add_space(8.0);
                                 ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
-                                for (icon, cmd, tip) in large.iter() {
-                                    if hidden(cmd) {
-                                        continue;
-                                    }
+                                for (icon, cmd, tip) in row.iter() {
                                     ui.add_enabled_ui(command_known(cmd), |ui| {
                                         if icons::button(ui, *icon, 40.0, tip, false).clicked() {
                                             clicked = Some(cmd);
