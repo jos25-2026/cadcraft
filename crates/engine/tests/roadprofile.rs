@@ -130,3 +130,108 @@ fn a_wider_road_and_flatter_slopes_change_the_result() {
         assert!(s.execute("roadsection", &p).is_err(), "{bad}");
     }
 }
+
+fn hatch_area(s: &Session, layer: &str) -> (usize, f64) {
+    let mut total = 0.0;
+    let mut n = 0;
+    for e in s.doc().unwrap().model.iter().filter(|e| e.common.layer == layer) {
+        if let EntityKind::Hatch(h) = &e.kind {
+            n += 1;
+            for l in &h.loops {
+                let v = &l.vertices;
+                let a: f64 = (0..v.len()).map(|i| v[i].p.x * v[(i + 1) % v.len()].p.y - v[(i + 1) % v.len()].p.x * v[i].p.y).sum();
+                total += a.abs() / 2.0;
+            }
+        }
+    }
+    (n, total)
+}
+
+#[test]
+fn cut_and_fill_are_shaded_and_the_shading_matches_the_areas() {
+    let mut s = site();
+    let r = s.execute("roadsection", &json!({ "name": "Road", "pvis": [[0, 5, 0], [80, 5, 0]], "interval": 20 })).unwrap();
+    let secs = r["sections"].as_array().unwrap();
+    let cut: f64 = secs.iter().map(|x| x["cut"].as_f64().unwrap()).sum();
+    let fill: f64 = secs.iter().map(|x| x["fill"].as_f64().unwrap()).sum();
+    let (nc, ac) = hatch_area(&s, "RS-CUT");
+    let (nf, af) = hatch_area(&s, "RS-FILL");
+    assert!(nc >= 3 && nf >= 1, "cut hatches {nc}, fill hatches {nf}");
+    // The default sample step on the sheet is the one the areas use, so the hatches add up to them.
+    assert!((ac - cut).abs() < 1e-6 * cut.max(1.0), "{ac} vs {cut}");
+    assert!((af - fill).abs() < 1e-6 * fill.max(1.0), "{af} vs {fill}");
+    // Off: no hatches, same numbers.
+    let mut s2 = site();
+    let r2 = s2.execute("roadsection", &json!({ "name": "Road", "pvis": [[0, 5, 0], [80, 5, 0]], "interval": 20, "shade": false })).unwrap();
+    assert_eq!(hatch_area(&s2, "RS-CUT").0 + hatch_area(&s2, "RS-FILL").0, 0);
+    assert_eq!(r2["cutVolume"], r["cutVolume"]);
+}
+
+#[test]
+fn a_ditch_deepens_only_the_cut_sides() {
+    let mut s = site();
+    let pv = json!([[0, 5, 0], [80, 5, 0]]);
+    let a = s.execute("roadsection", &json!({ "name": "Road", "pvis": pv, "interval": 40 })).unwrap();
+    let b = s.execute("roadsection", &json!({ "name": "Road", "pvis": pv, "interval": 40, "ditchDepth": 0.5, "layerPrefix": "RD" })).unwrap();
+    let (sa, sb) = (a["sections"].as_array().unwrap(), b["sections"].as_array().unwrap());
+    // Station 0 is a fill on both sides: no ditch there.
+    assert!((sa[0]["fill"].as_f64().unwrap() - sb[0]["fill"].as_f64().unwrap()).abs() < 1e-9);
+    assert_eq!(sa[0]["daylightLeft"], sb[0]["daylightLeft"]);
+    // Station 80 is a deep cut: the ditch adds cut area and the daylight moves out.
+    assert!(sb[2]["cut"].as_f64().unwrap() > sa[2]["cut"].as_f64().unwrap() + 1.0, "{} vs {}", sb[2]["cut"], sa[2]["cut"]);
+    assert!(sb[2]["daylightLeft"].as_f64().unwrap() > sa[2]["daylightLeft"].as_f64().unwrap());
+    assert!(b["cutVolume"].as_f64().unwrap() > a["cutVolume"].as_f64().unwrap());
+    // The ditch is drawn: shoulder edge, two ditch corners, daylight on each side plus the 5 road points.
+    let dsg = s.doc().unwrap().model.iter().filter(|e| e.common.layer == "RD-DESIGN").filter_map(|e| match &e.kind {
+        EntityKind::LwPolyline(p) => Some(p.vertices.len()),
+        _ => None,
+    });
+    assert_eq!(dsg.max(), Some(5 + 2 * 3), "a cut section has both ditches");
+}
+
+#[test]
+fn superelevation_banks_the_road_between_its_rows() {
+    let mut s = site();
+    let pv = json!([[0, 5, 0], [80, 5, 0]]);
+    let se = json!([[20, -2, -2], [40, 6, -6], [60, 6, -6]]);
+    let r = s.execute("roadsection", &json!({ "name": "Road", "pvis": pv, "interval": 10, "superelevation": se })).unwrap();
+    let secs = r["sections"].as_array().unwrap();
+    let at = |i: usize, k: &str| secs[i][k].as_f64().unwrap();
+    // Outside the table, and at its first row: the normal crown.
+    assert!((at(0, "slopeLeft") + 2.0).abs() < 1e-9 && (at(0, "slopeRight") + 2.0).abs() < 1e-9);
+    assert!((at(8, "slopeLeft") + 2.0).abs() < 1e-9);
+    // Halfway up the transition, then fully banked.
+    assert!((at(3, "slopeLeft") - 2.0).abs() < 1e-9 && (at(3, "slopeRight") + 4.0).abs() < 1e-9, "{}", secs[3]);
+    assert!((at(4, "slopeLeft") - 6.0).abs() < 1e-9 && (at(4, "slopeRight") + 6.0).abs() < 1e-9);
+    assert!((at(6, "slopeRight") + 6.0).abs() < 1e-9);
+    // Banking moves earth: the areas differ from the crowned road at a banked station, not at a crowned one.
+    let c = s.execute("roadsection", &json!({ "name": "Road", "pvis": pv, "interval": 10, "layerPrefix": "RC" })).unwrap();
+    let cs = c["sections"].as_array().unwrap();
+    assert!((cs[0]["cut"].as_f64().unwrap() - at(0, "cut")).abs() < 1e-9);
+    assert!((cs[4]["cut"].as_f64().unwrap() - at(4, "cut")).abs() > 1e-6 || (cs[4]["fill"].as_f64().unwrap() - at(4, "fill")).abs() > 1e-6);
+    assert!(secs[4]["slopeLeft"].as_f64().unwrap() > cs[4]["slopeLeft"].as_f64().unwrap());
+}
+
+#[test]
+fn bad_ditches_and_superelevations_are_refused() {
+    let mut s = site();
+    let pv = json!([[0, 5, 0], [80, 5, 0]]);
+    let n = s.doc().unwrap().model.iter().count();
+    for bad in [
+        json!({"ditchDepth": -1}),
+        json!({"ditchSlope": 0}),
+        json!({"ditchWidth": -1}),
+        json!({"superelevation": "x"}),
+        json!({"superelevation": [[0, 2]]}),
+        json!({"superelevation": [[0, 2, 2], [0, 3, 3]]}),
+        json!({"superelevation": [[0, 40, -40], [10, 2, 2]]}),
+        json!({"superelevation": [[1e30, 2, 2]]}),
+    ] {
+        let mut p = json!({ "name": "Road", "pvis": pv });
+        for (k, v) in bad.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        assert!(s.execute("roadsection", &p).is_err(), "{bad}");
+    }
+    assert_eq!(s.doc().unwrap().model.iter().count(), n);
+}

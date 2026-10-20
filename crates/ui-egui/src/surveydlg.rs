@@ -1210,6 +1210,12 @@ struct RoadSecForm {
     reach: String,
     vscale: String,
     columns: u32,
+    /// Superelevation rows: station, left slope %, right slope % (empty rows are ignored).
+    banking: Vec<[String; 3]>,
+    ditch_depth: String,
+    ditch_width: String,
+    ditch_slope: String,
+    shade: bool,
 }
 
 impl Default for RoadSecForm {
@@ -1228,6 +1234,11 @@ impl Default for RoadSecForm {
             reach: "60".into(),
             vscale: String::new(),
             columns: 3,
+            banking: vec![Default::default(), Default::default()],
+            ditch_depth: String::new(),
+            ditch_width: "0.6".into(),
+            ditch_slope: "3".into(),
+            shade: true,
         }
     }
 }
@@ -1240,6 +1251,24 @@ fn roadsec_params(f: &RoadSecForm) -> Result<Value, String> {
     m.insert("name".into(), json!(f.name));
     m.insert("lanes".into(), json!(f.lanes));
     m.insert("columns".into(), json!(f.columns));
+    m.insert("shade".into(), json!(f.shade));
+    let mut rows = Vec::new();
+    for (i, r) in f.banking.iter().enumerate() {
+        if r.iter().all(|c| c.trim().is_empty()) {
+            continue;
+        }
+        let n = |t: &str| t.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let (Some(sta), Some(l), Some(rt)) = (n(&r[0]), n(&r[1]), n(&r[2])) else {
+            return Err(format!("{} {}: {}", crate::tl!("Superelevation row"), i + 1, crate::tl!("station and both slopes are numbers")));
+        };
+        if l.abs() > 30.0 || rt.abs() > 30.0 {
+            return Err(format!("{} {}: {}", crate::tl!("Superelevation row"), i + 1, crate::tl!("slopes are within 30 %")));
+        }
+        rows.push(json!([sta, l, rt]));
+    }
+    if !rows.is_empty() {
+        m.insert("superelevation".into(), Value::Array(rows));
+    }
     put(&mut m, "startStation", &f.start, "Start station", number).map_err(bad_field)?;
     for (key, text, field) in [
         ("interval", &f.interval, "Section interval"),
@@ -1248,11 +1277,14 @@ fn roadsec_params(f: &RoadSecForm) -> Result<Value, String> {
         ("fillSlope", &f.fill_slope, "Fill slope (horizontal per 1 vertical)"),
         ("reach", &f.reach, "Farthest slope run"),
         ("vScale", &f.vscale, "Vertical exaggeration"),
+        ("ditchSlope", &f.ditch_slope, "Ditch side slope (horizontal per 1 vertical)"),
     ] {
         put(&mut m, key, text, field, positive).map_err(bad_field)?;
     }
     for (key, text, field) in [
         ("shoulder", &f.shoulder, "Shoulder width"),
+        ("ditchDepth", &f.ditch_depth, "Ditch depth"),
+        ("ditchWidth", &f.ditch_width, "Ditch bottom width"),
         ("crossfall", &f.crossfall, "Lane crossfall (%)"),
         ("shoulderFall", &f.shoulder_fall, "Shoulder crossfall (%)"),
     ] {
@@ -1366,8 +1398,47 @@ pub fn roadsection(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
                 ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(140.0));
                 ui.end_row();
             }
+            for (label, text, hint) in [
+                ("Ditch depth", &mut f.ditch_depth, "0 (none)"),
+                ("Ditch bottom width", &mut f.ditch_width, "0.6"),
+                ("Ditch side slope (horizontal per 1 vertical)", &mut f.ditch_slope, "3"),
+            ] {
+                ui.label(crate::i18n::t(label));
+                ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(140.0));
+                ui.end_row();
+            }
+            ui.label(crate::tl!("Superelevation"));
+            ui.vertical(|ui| {
+                egui::Grid::new("roadsection_banking").num_columns(3).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
+                    ui.label(crate::tl!("Station"));
+                    ui.label(crate::tl!("Left %"));
+                    ui.label(crate::tl!("Right %"));
+                    ui.end_row();
+                    for row in f.banking.iter_mut() {
+                        for c in row.iter_mut() {
+                            ui.add(egui::TextEdit::singleline(c).desired_width(70.0));
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(crate::tl!("Add row")).clicked() && f.banking.len() < 200 {
+                        f.banking.push(Default::default());
+                    }
+                    if ui.button(crate::tl!("Remove last")).clicked() && f.banking.len() > 1 {
+                        f.banking.pop();
+                    }
+                });
+                ui.weak(crate::tl!(
+                    "Slope of each side's lanes, rising outwards is positive: -2 / -2 is the normal crown, 6 / -6 falls to the right."
+                ));
+            });
+            ui.end_row();
             ui.label(crate::tl!("Vertical exaggeration"));
             ui.add(egui::TextEdit::singleline(&mut f.vscale).hint_text("1").desired_width(140.0));
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut f.shade, crate::tl!("Hatch the cut and fill areas"));
             ui.end_row();
             ui.label(crate::tl!("Sections per row"));
             ui.add(egui::DragValue::new(&mut f.columns).range(1..=50));
@@ -1408,6 +1479,21 @@ mod tests {
         assert_eq!(r["cutSlope"], json!(1.5));
         assert!(roadsec_params(&RoadSecForm { name: "L".into(), cut_slope: "0".into(), ..RoadSecForm::default() }).is_err());
         assert!(roadsec_params(&RoadSecForm { name: "L".into(), crossfall: "-1".into(), ..RoadSecForm::default() }).is_err());
+        let b = RoadSecForm {
+            name: "L".into(),
+            ditch_depth: "0.5".into(),
+            banking: vec![["20".into(), "-2".into(), "-2".into()], ["40".into(), "6".into(), "-6".into()], Default::default()],
+            ..RoadSecForm::default()
+        };
+        let p = roadsec_params(&b).unwrap_or_default();
+        assert_eq!(p["superelevation"], json!([[20.0, -2.0, -2.0], [40.0, 6.0, -6.0]]));
+        assert_eq!(p["ditchDepth"], json!(0.5));
+        assert_eq!(p["shade"], json!(true));
+        assert!(roadsec_params(&RoadSecForm { name: "L".into(), ..RoadSecForm::default() }).is_ok_and(|p| p.get("superelevation").is_none()));
+        let half = RoadSecForm { name: "L".into(), banking: vec![["20".into(), "-2".into(), String::new()]], ..RoadSecForm::default() };
+        assert!(roadsec_params(&half).is_err());
+        let steep = RoadSecForm { name: "L".into(), banking: vec![["20".into(), "40".into(), "-2".into()]], ..RoadSecForm::default() };
+        assert!(roadsec_params(&steep).is_err());
     }
 
     #[test]

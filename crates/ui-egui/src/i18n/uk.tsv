@@ -1443,3 +1443,15 @@
 	station and elevation are numbers	пікет і відмітка — числа
 	the curve length is zero or more	довжина кривої — нуль або більше
 	Give at least two PVIs (station and elevation).	Вкажіть щонайменше дві вершини (пікет і відмітка).
+	Ditch depth	Глибина кювету
+	Ditch bottom width	Ширина дна кювету
+	Ditch side slope (horizontal per 1 vertical)	Укіс кювету (по горизонталі на 1 по вертикалі)
+	Superelevation	Віраж
+	Left %	Ліворуч %
+	Right %	Праворуч %
+	Add row	Додати рядок
+	Hatch the cut and fill areas	Штрихувати площі виїмки й насипу
+	Superelevation row	Рядок віражу
+	station and both slopes are numbers	пікет і обидва ухили — числа
+	slopes are within 30 %	ухили в межах 30 %
+	Slope of each side's lanes, rising outwards is positive: -2 / -2 is the normal crown, 6 / -6 falls to the right.	Ухил смуг кожного боку, підйом назовні — додатний: -2 / -2 — звичайний двосхилий профіль, 6 / -6 — похил праворуч.

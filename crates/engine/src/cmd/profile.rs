@@ -10,7 +10,7 @@
 //! the cut and fill area of each section and the volumes by average end area.
 
 use cadcraft_color::Color;
-use cadcraft_doc::{Common, EntityKind, HAlign, Line, LwPolyline, VAlign};
+use cadcraft_doc::{Common, EntityKind, HAlign, Hatch, HatchLoop, Line, LwPolyline, VAlign};
 use cadcraft_geom::{PolyVertex, Vec2, Vec3};
 use serde_json::{Value, json};
 
@@ -45,8 +45,12 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(
                 "{name: a centerline, pvis?: [[station, elevation, curveLength?], ...] (default: the PVIs kept by ROADPROFILE), startStation?: 0, interval?: 20, \
                  lanes?: lanes each side (1), laneWidth?: 3.5, shoulder?: 1.5, crossfall?: % (2), shoulderFall?: % (4), cutSlope?: horizontal per 1 vertical (1.5), \
-                 fillSlope?: (2), reach?: farthest side-slope run from the shoulder (60), vScale?: 1, columns?: 3, at?, textHeight?, handles?, layerPrefix?: \"RS\"} \
-                 → {sections: [{station, ground, design, cut, fill, daylightLeft, daylightRight}], cutVolume, fillVolume}",
+                 fillSlope?: (2), reach?: farthest side-slope run from the shoulder (60), vScale?: 1, columns?: 3, at?, textHeight?, handles?, layerPrefix?: \"RS\", \
+                 superelevation?: [[station, leftPercent, rightPercent], ...] (the slope of the lanes on each side, rising outwards from the crown is positive; \
+                 -2, -2 is the normal crown, 6, -6 banks the road to fall to the right; linear between stations, the normal crown outside them), \
+                 ditchDepth?: depth of a roadside ditch below the shoulder edge on cut sides (0, none), ditchWidth?: its flat bottom (0.6), \
+                 ditchSlope?: its inner side slope, horizontal per 1 vertical (3), shade?: hatch the cut and fill areas (true)} \
+                 → {sections: [{station, ground, design, cut, fill, daylightLeft, daylightRight, slopeLeft, slopeRight}], cutVolume, fillVolume}",
             ),
     ]
 }
@@ -246,6 +250,23 @@ fn polyline(pts: Vec<Vec2>, closed: bool) -> EntityKind {
         const_width: 0.0,
         elevation: 0.0,
         plinegen: false,
+    })
+}
+/// A closed hatch over `verts`, filled with a standard line pattern.
+fn hatch_region(verts: Vec<PolyVertex>, pattern: &str, angle: f64, scale: f64) -> EntityKind {
+    EntityKind::Hatch(Hatch {
+        pattern: pattern.to_string(),
+        solid: false,
+        loops: vec![HatchLoop { vertices: verts, outer: true, sources: Vec::new() }],
+        scale,
+        angle,
+        associative: false,
+        style: 0,
+        elevation: 0.0,
+        gradient: None,
+        origin: Vec2::default(),
+        background: None,
+        pattern_lines: Vec::new(),
     })
 }
 fn layer_colors(d: &mut cadcraft_doc::Drawing, layers: &[(&str, u8)]) {
@@ -521,23 +542,170 @@ struct Template {
     shoulder_fall: f64,
     cut_slope: f64,
     fill_slope: f64,
+    /// A roadside ditch on the cut sides: depth below the shoulder edge (0: none), bottom width,
+    /// inner side slope (horizontal per 1 vertical).
+    ditch_depth: f64,
+    ditch_width: f64,
+    ditch_slope: f64,
+    /// The outward slope (rise per run) of the lanes and of the shoulders: left, right.
+    lane: [f64; 2],
+    shoulder: [f64; 2],
+}
+
+/// The side of an offset: 0 left (negative offsets), 1 right.
+fn side_of(u: f64) -> usize {
+    usize::from(u >= 0.0)
 }
 
 impl Template {
-    /// The design elevation at offset `u` from the centerline (the same on both sides).
+    /// The normal crown: both sides fall away from the centerline.
+    fn crowned(mut self) -> Template {
+        self.lane = [-self.crossfall; 2];
+        self.shoulder = [-self.shoulder_fall; 2];
+        self
+    }
+    /// The road banked with the given lane slopes (outward rise per run, left and right). A shoulder
+    /// that rises follows the lane; one that falls drops at least as steeply as the normal shoulder.
+    fn banked(mut self, left: f64, right: f64) -> Template {
+        self.lane = [left, right];
+        let sh = |lane: f64| if lane >= 0.0 { lane } else { lane.min(-self.shoulder_fall) };
+        self.shoulder = [sh(left), sh(right)];
+        self
+    }
+    /// The design elevation at the signed offset `u` from the centerline.
     fn z(&self, centre: f64, u: f64) -> f64 {
+        let k = side_of(u);
         let a = u.abs();
-        centre - self.crossfall * a.min(self.lanes_half) - self.shoulder_fall * (a.min(self.half) - self.lanes_half).max(0.0)
+        let lane = self.lane.get(k).copied().unwrap_or(0.0);
+        let shoulder = self.shoulder.get(k).copied().unwrap_or(0.0);
+        centre + lane * a.min(self.lanes_half) + shoulder * (a.min(self.half) - self.lanes_half).max(0.0)
     }
-    /// The design surface at `a` from the centreline, the side slopes included.
-    fn full(&self, centre: f64, a: f64, fill: bool) -> f64 {
-        if a <= self.half {
-            return self.z(centre, a);
+    /// The run from the shoulder edge to each corner of the ditch (the foot of the inner slope,
+    /// then the end of the bottom) on a cut side.
+    fn ditch_breaks(&self, fill: bool) -> Vec<f64> {
+        if fill || self.ditch_depth <= 0.0 {
+            return Vec::new();
         }
-        let ze = self.z(centre, self.half);
-        let run = a - self.half;
-        if fill { ze - run / self.fill_slope } else { ze + run / self.cut_slope }
+        let d1 = self.ditch_depth * self.ditch_slope;
+        vec![d1, d1 + self.ditch_width]
     }
+    /// The design surface at `a` from the centreline on side `k`, the ditch and side slopes included.
+    fn full(&self, centre: f64, k: usize, a: f64, fill: bool) -> f64 {
+        let sign = if k == 0 { -1.0 } else { 1.0 };
+        if a <= self.half {
+            return self.z(centre, sign * a);
+        }
+        let ze = self.z(centre, sign * self.half);
+        let run = a - self.half;
+        if fill {
+            return ze - run / self.fill_slope;
+        }
+        match self.ditch_breaks(false).as_slice() {
+            [d1, d2] => {
+                if run <= *d1 {
+                    ze - run / self.ditch_slope
+                } else if run <= *d2 {
+                    ze - self.ditch_depth
+                } else {
+                    ze - self.ditch_depth + (run - d2) / self.cut_slope
+                }
+            }
+            _ => ze + run / self.cut_slope,
+        }
+    }
+}
+
+/// The superelevation table `[[station, left %, right %], ...]`: sorted, finite, no repeated station.
+fn parse_super(p: &Value) -> Result<Vec<(f64, f64, f64)>> {
+    let Some(v) = p.get("superelevation").filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
+    let bad_rows = || bad("roadsection", "`superelevation` is [[station, left slope %, right slope %], ...] with slopes within 30 %");
+    let a = v.as_array().ok_or_else(bad_rows)?;
+    if a.len() > MAX_PVIS {
+        return Err(bad("roadsection", format!("`superelevation` has at most {MAX_PVIS} rows")));
+    }
+    let mut out = Vec::with_capacity(a.len());
+    for r in a {
+        let f: Vec<f64> = r.as_array().ok_or_else(bad_rows)?.iter().filter_map(Value::as_f64).collect();
+        let [sta, l, rt] = f[..] else { return Err(bad_rows()) };
+        if !(sta.is_finite() && sta.abs() <= MAX_COORD && l.abs() <= 30.0 && rt.abs() <= 30.0) {
+            return Err(bad_rows());
+        }
+        out.push((sta, l / 100.0, rt / 100.0));
+    }
+    out.sort_by(|x, y| x.0.total_cmp(&y.0));
+    if out.windows(2).any(|w| w.get(1).zip(w.first()).is_some_and(|(b, a)| b.0 - a.0 < 1e-9)) {
+        return Err(bad("roadsection", "two `superelevation` rows at the same station"));
+    }
+    Ok(out)
+}
+
+/// The lane slopes at a station, interpolated linearly between rows; `None` outside the table
+/// (the normal crown).
+fn super_at(table: &[(f64, f64, f64)], sta: f64) -> Option<(f64, f64)> {
+    let (first, last) = (table.first()?, table.last()?);
+    if sta < first.0 - 1e-9 || sta > last.0 + 1e-9 {
+        return None;
+    }
+    let i = table.partition_point(|r| r.0 <= sta).saturating_sub(1);
+    let a = table.get(i)?;
+    let b = table.get(i + 1).unwrap_or(a);
+    let t = if b.0 - a.0 > 1e-12 { ((sta - a.0) / (b.0 - a.0)).clamp(0.0, 1.0) } else { 0.0 };
+    Some((a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t))
+}
+
+/// A region between the design and the ground: `fill` when the design is above, the points along
+/// the design, then the points along the ground, both left to right as (offset, elevation).
+struct Region {
+    fill: bool,
+    design: Vec<(f64, f64)>,
+    ground: Vec<(f64, f64)>,
+}
+
+/// The regions between the design and the ground in samples `(offset, Some((design, ground)))`,
+/// cut where the design is below. Crossings are split exactly; a missing ground ends a region.
+fn regions(samples: &[(f64, Option<(f64, f64)>)]) -> Vec<Region> {
+    let mut out: Vec<Region> = Vec::new();
+    let mut cur: Option<Region> = None;
+    let flush = |cur: &mut Option<Region>, out: &mut Vec<Region>| {
+        if let Some(r) = cur.take()
+            && r.design.len() >= 2
+        {
+            out.push(r);
+        }
+    };
+    for w in samples.windows(2) {
+        let (Some((u0, Some((d0, g0)))), Some((u1, Some((d1, g1))))) = (w.first().copied(), w.get(1).copied()) else {
+            flush(&mut cur, &mut out);
+            continue;
+        };
+        let (a, b) = (d0 - g0, d1 - g1);
+        // The pieces of this step: (from, to, fill), each end as (offset, design, ground).
+        let mut pieces: Vec<((f64, f64, f64), (f64, f64, f64), bool)> = Vec::new();
+        if (a > 0.0 && b < 0.0) || (a < 0.0 && b > 0.0) {
+            let t = a / (a - b);
+            let (um, zm) = (u0 + t * (u1 - u0), d0 + t * (d1 - d0));
+            pieces.push(((u0, d0, g0), (um, zm, zm), a > 0.0));
+            pieces.push(((um, zm, zm), (u1, d1, g1), b > 0.0));
+        } else if a != 0.0 || b != 0.0 {
+            pieces.push(((u0, d0, g0), (u1, d1, g1), a + b > 0.0));
+        }
+        for (p0, p1, fill) in pieces {
+            let joins = cur.as_ref().is_some_and(|r| r.fill == fill && r.design.last().is_some_and(|l| (l.0 - p0.0).abs() < 1e-9));
+            if !joins {
+                flush(&mut cur, &mut out);
+                cur = Some(Region { fill, design: vec![(p0.0, p0.1)], ground: vec![(p0.0, p0.2)] });
+            }
+            if let Some(r) = cur.as_mut() {
+                r.design.push((p1.0, p1.1));
+                r.ground.push((p1.0, p1.2));
+            }
+        }
+        if a == 0.0 && b == 0.0 {
+            flush(&mut cur, &mut out);
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
 }
 
 /// The areas above and below zero of a sampled difference `d(u)` (design minus ground):
@@ -580,6 +748,10 @@ struct RoadSec {
     fill: f64,
     cut: f64,
     ok: bool,
+    /// The template at this station (banked where the superelevation says so).
+    tpl: Template,
+    /// The cut and fill regions, for shading.
+    shading: Vec<Region>,
 }
 
 fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
@@ -606,16 +778,35 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
     let cut_slope = size_param("roadsection", p, "cutSlope", false)?.unwrap_or(1.5);
     let fill_slope = size_param("roadsection", p, "fillSlope", false)?.unwrap_or(2.0);
     let reach = size_param("roadsection", p, "reach", false)?.unwrap_or(60.0);
+    let ditch_depth = size_param("roadsection", p, "ditchDepth", true)?.unwrap_or(0.0);
+    let ditch_width = size_param("roadsection", p, "ditchWidth", true)?.unwrap_or(0.6);
+    let ditch_slope = size_param("roadsection", p, "ditchSlope", false)?.unwrap_or(3.0);
+    let supers = parse_super(p)?;
+    let shade = bool_or(p, "shade", true);
     let vscale = size_param("roadsection", p, "vScale", false)?.unwrap_or(1.0);
-    if ![interval, lane_w, shoulder, crossfall, shoulder_fall, cut_slope, fill_slope, reach, vscale, start]
+    if ![interval, lane_w, shoulder, crossfall, shoulder_fall, cut_slope, fill_slope, reach, vscale, start, ditch_depth, ditch_width, ditch_slope]
         .iter()
         .all(|v| v.is_finite() && v.abs() <= 1.0e6)
     {
         return Err(bad("roadsection", "sizes must be finite and reasonable"));
     }
     let lanes_half = lanes * lane_w;
-    let tpl = Template { lanes_half, half: lanes_half + shoulder, crossfall, shoulder_fall, cut_slope, fill_slope };
-    let half_sheet = tpl.half + reach;
+    let base_tpl = Template {
+        lanes_half,
+        half: lanes_half + shoulder,
+        crossfall,
+        shoulder_fall,
+        cut_slope,
+        fill_slope,
+        ditch_depth,
+        ditch_width,
+        ditch_slope,
+        lane: [0.0; 2],
+        shoulder: [0.0; 2],
+    }
+    .crowned();
+    let tpl = base_tpl;
+    let half_sheet = tpl.half + reach + ditch_depth * ditch_slope + ditch_width;
     let span = 2.0 * half_sheet;
     let step = size_param("roadsection", p, "step", false)?.unwrap_or(span / 200.0);
     let th = size_param("roadsection", p, "textHeight", false)?.unwrap_or(span / 40.0);
@@ -657,6 +848,10 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
         let (pos, dir) = locate(&line, &cum, sta - start);
         let normal = Vec2::new(-dir.y, dir.x);
         let centre = grade.z(sta).unwrap_or(0.0);
+        let tpl = match super_at(&supers, sta) {
+            Some((l, r)) => base_tpl.banked(l, r),
+            None => base_tpl,
+        };
         let world = |u: f64| pos - normal * u; // u < 0 is left of the direction of travel
         let gz = |u: f64| {
             let q = world(u);
@@ -674,10 +869,12 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
             fill: 0.0,
             cut: 0.0,
             ok: true,
+            tpl,
+            shading: Vec::new(),
         };
         // The daylight on each side: where the side slope meets the ground.
         for (k, sign) in [-1.0f64, 1.0].into_iter().enumerate() {
-            let ze = tpl.z(centre, tpl.half);
+            let ze = tpl.z(centre, sign * tpl.half);
             let Some(g_edge) = gz(sign * tpl.half) else {
                 sec.ok = false;
                 continue;
@@ -686,7 +883,7 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(f) = sec.fill_side.get_mut(k) {
                 *f = fill;
             }
-            let diff = |d: f64| -> Option<f64> { Some(tpl.full(centre, tpl.half + d, fill) - gz(sign * (tpl.half + d))?) };
+            let diff = |d: f64| -> Option<f64> { Some(tpl.full(centre, k, tpl.half + d, fill) - gz(sign * (tpl.half + d))?) };
             let mut prev = (0.0, ze - g_edge);
             let mut found = None;
             if prev.1 == 0.0 {
@@ -712,17 +909,21 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
         // Areas between the design (with its slopes) and the ground.
         if let (Some(l), Some(r)) = (sec.day[0], sec.day[1]) {
             let m = ((l + r) / dstep.max(1e-9)).ceil().clamp(2.0, 20_000.0) as usize;
-            let samples: Vec<(f64, Option<f64>)> = (0..=m)
+            let pairs: Vec<(f64, Option<(f64, f64)>)> = (0..=m)
                 .map(|i| {
                     let u = -l + (l + r) * i as f64 / m as f64;
-                    let side = if u < 0.0 { 0 } else { 1 };
+                    let side = side_of(u);
                     let fill = sec.fill_side.get(side).copied().unwrap_or(false);
-                    (u, gz(u).map(|g| tpl.full(centre, u.abs(), fill) - g))
+                    (u, gz(u).map(|g| (tpl.full(centre, side, u.abs(), fill), g)))
                 })
                 .collect();
+            let samples: Vec<(f64, Option<f64>)> = pairs.iter().map(|(u, v)| (*u, v.map(|(d, g)| d - g))).collect();
             let (f, c) = areas(&samples);
             sec.fill = f;
             sec.cut = c;
+            if shade {
+                sec.shading = regions(&pairs);
+            }
         } else {
             sec.ok = false;
         }
@@ -751,6 +952,7 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
         table.push(json!({
             "station": sec.sta, "ground": sec.ground0, "design": sec.centre, "cut": sec.cut, "fill": sec.fill,
             "daylightLeft": sec.day[0], "daylightRight": sec.day[1], "complete": sec.ok,
+            "slopeLeft": sec.tpl.lane[0] * 100.0, "slopeRight": sec.tpl.lane[1] * 100.0,
             "cutVolume": vc, "fillVolume": vf, "cumCut": run_cut, "cumFill": run_fill,
         }));
     }
@@ -759,14 +961,20 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
     // Drawing: a sheet of sections, the road edges on the plan and a quantity table.
     let (mut zmin, mut zmax) = (f64::INFINITY, f64::NEG_INFINITY);
     for sec in &secs {
-        for z in sec.ground.iter().flatten().copied().chain([sec.centre, tpl.z(sec.centre, tpl.half)]) {
+        let t = &sec.tpl;
+        for z in sec.ground.iter().flatten().copied().chain([sec.centre, t.z(sec.centre, -t.half), t.z(sec.centre, t.half)]) {
             zmin = zmin.min(z);
             zmax = zmax.max(z);
         }
         for (k, d) in sec.day.iter().enumerate() {
+            let fill = sec.fill_side.get(k).copied().unwrap_or(false);
             if let Some(d) = d {
-                zmin = zmin.min(tpl.full(sec.centre, *d, sec.fill_side.get(k).copied().unwrap_or(false)));
-                zmax = zmax.max(tpl.full(sec.centre, *d, sec.fill_side.get(k).copied().unwrap_or(false)));
+                let z = t.full(sec.centre, k, *d, fill);
+                zmin = zmin.min(z);
+                zmax = zmax.max(z);
+            }
+            if !fill && t.ditch_depth > 0.0 {
+                zmin = zmin.min(t.z(sec.centre, if k == 0 { -t.half } else { t.half }) - t.ditch_depth);
             }
         }
     }
@@ -786,6 +994,7 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
     let (l_ground, l_design, l_frame, l_text, l_cl) =
         (format!("{prefix}-GROUND"), format!("{prefix}-DESIGN"), format!("{prefix}-FRAME"), format!("{prefix}-TEXT"), format!("{prefix}-CL"));
     let (l_edge, l_day) = (format!("{prefix}-PLAN-EDGE"), format!("{prefix}-PLAN-DAYLIGHT"));
+    let (l_cut, l_fill) = (format!("{prefix}-CUT"), format!("{prefix}-FILL"));
     let mut items: Vec<(&str, EntityKind)> = Vec::new();
     for (k, sec) in secs.iter().enumerate() {
         let (col, row) = (k % columns, k / columns);
@@ -815,14 +1024,31 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((&l_ground, polyline(run, false)));
         }
         // The design: left daylight, shoulder edge, crown, shoulder edge, right daylight.
-        let (dl, dr) = (sec.day[0].unwrap_or(tpl.half), sec.day[1].unwrap_or(tpl.half));
+        let t = &sec.tpl;
+        let (dl, dr) = (sec.day[0].unwrap_or(t.half), sec.day[1].unwrap_or(t.half));
         let (fl, fr) = (sec.fill_side[0], sec.fill_side[1]);
-        let mut dsg = vec![at(-dl, tpl.full(sec.centre, dl, fl))];
-        for u in [-tpl.half, -tpl.lanes_half, 0.0, tpl.lanes_half, tpl.half] {
-            dsg.push(at(u, tpl.z(sec.centre, u)));
+        // The corners of a side outside the shoulder edge: the ditch, then the daylight.
+        let outer = |day: f64, fill: bool| -> Vec<f64> {
+            let mut v: Vec<f64> = t.ditch_breaks(fill).into_iter().map(|r| t.half + r).filter(|a| *a < day - 1e-9).collect();
+            v.push(day);
+            v
+        };
+        let mut dsg: Vec<Vec2> = Vec::new();
+        for a in outer(dl, fl).into_iter().rev() {
+            dsg.push(at(-a, t.full(sec.centre, 0, a, fl)));
         }
-        dsg.push(at(dr, tpl.full(sec.centre, dr, fr)));
+        for u in [-t.half, -t.lanes_half, 0.0, t.lanes_half, t.half] {
+            dsg.push(at(u, t.z(sec.centre, u)));
+        }
+        for a in outer(dr, fr) {
+            dsg.push(at(a, t.full(sec.centre, 1, a, fr)));
+        }
         items.push((&l_design, polyline(dsg, false)));
+        for reg in &sec.shading {
+            let verts: Vec<PolyVertex> = reg.design.iter().chain(reg.ground.iter().rev()).map(|&(u, z)| PolyVertex::new(at(u, z))).collect();
+            let (layer, angle) = if reg.fill { (&l_fill, 90.0_f64.to_radians()) } else { (&l_cut, 0.0) };
+            items.push((layer, hatch_region(verts, "ANSI31", angle, th * 0.6 / 0.125)));
+        }
         let label = format!("STA {}", station(sec.sta));
         items.push((&l_text, txt(s, Vec2::new(top.x + pad, top.y - pad * 0.6), &label, th * 1.4)));
         items.push((&l_text, txt(s, Vec2::new(top.x + th * 0.5, base - th * 2.8), &format!("Cut {:.2} m2   Fill {:.2} m2", sec.cut, sec.fill), th)));
@@ -835,14 +1061,18 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
                 th,
             ),
         ));
+        if !supers.is_empty() {
+            let txt_s = format!("Slope L {:.1}%  R {:.1}%", t.lane[0] * 100.0, t.lane[1] * 100.0);
+            items.push((&l_text, txt(s, Vec2::new(top.x + th * 0.5, base - th * 7.6), &txt_s, th)));
+        }
         if !sec.ok {
             items.push((&l_text, txt(s, Vec2::new(top.x + th * 0.5, base - th * 6.0), "No daylight: the side slope does not meet the ground", th)));
         }
         if let Some(d) = sec.day[0] {
-            items.push((&l_text, txt(s, at(-d, tpl.full(sec.centre, d, fl)) + Vec2::new(0.0, th), &format!("{d:.1}"), th)));
+            items.push((&l_text, txt(s, at(-d, t.full(sec.centre, 0, d, fl)) + Vec2::new(0.0, th), &format!("{d:.1}"), th)));
         }
         if let Some(d) = sec.day[1] {
-            items.push((&l_text, txt(s, at(d, tpl.full(sec.centre, d, fr)) + Vec2::new(0.0, th), &format!("{d:.1}"), th)));
+            items.push((&l_text, txt(s, at(d, t.full(sec.centre, 1, d, fr)) + Vec2::new(0.0, th), &format!("{d:.1}"), th)));
         }
     }
     // The plan: the road edges and the daylight lines.
@@ -901,7 +1131,10 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
     let n_items = items.len();
     {
         let d = s.doc_mut()?;
-        layer_colors(d, &[(&l_ground, 3), (&l_design, 1), (&l_frame, 8), (&l_text, 7), (&l_cl, 2), (&l_edge, 1), (&l_day, 5)]);
+        layer_colors(
+            d,
+            &[(&l_ground, 3), (&l_design, 1), (&l_frame, 8), (&l_text, 7), (&l_cl, 2), (&l_edge, 1), (&l_day, 5), (&l_cut, 30), (&l_fill, 150)],
+        );
         for (layer, kind) in items {
             let com = Common { layer: layer.to_string(), color: Color::ByLayer, ..base_common.clone() };
             d.add(&space, com, kind)?;
