@@ -1,6 +1,7 @@
 //! The command registry. Ids are AutoCAD command names in lower case; menu paths follow
 //! AutoCAD's menu bar so the catalog doubles as the parity metric.
 
+pub mod aerial;
 pub(crate) mod annoscale;
 mod annotate;
 mod array;
@@ -213,6 +214,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(road::specs());
         v.extend(profile::specs());
         v.extend(imageattach::specs());
+        v.extend(aerial::specs());
         v.extend(earthwork::specs());
         v.extend(mapgrid::specs());
         v.extend(terrain::specs());

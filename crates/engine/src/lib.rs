@@ -677,6 +677,9 @@ pub struct Session {
     pub align_dialog: bool,
     /// The PIs ROADALIGN chose for the settings dialog.
     pub align_pending: Option<Vec<Vec2>>,
+    /// Downloads the tiles of AERIAL (the tests give one that serves synthetic tiles; without one
+    /// a plain HTTPS client is used).
+    pub tile_fetcher: Option<Arc<dyn cmd::aerial::TileFetcher>>,
 }
 
 impl Default for Session {
@@ -727,6 +730,7 @@ impl Session {
             hatch_picks: None,
             align_dialog: false,
             align_pending: None,
+            tile_fetcher: None,
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {

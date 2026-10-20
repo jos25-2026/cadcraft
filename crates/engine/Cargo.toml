@@ -28,6 +28,10 @@ spade = "2"
 
 image = { workspace = true }
 
+# HTTPS downloads of aerial photo tiles (MIT OR Apache-2.0); not on the web build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = "3"
+
 [dev-dependencies]
 # Real DXF files for the external reference tests (io is a lower layer).
 cadcraft-io = { workspace = true }

@@ -61,6 +61,7 @@ pub enum Icon {
     Centerline,
     RoadAlign,
     RoadProfile,
+    Aerial,
     RoadSection,
     Table,
     Text,
@@ -482,6 +483,13 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             pen.l(19.0, 11.0, 19.0, 3.0);
             pen.fill_c(3.0, 19.0, 1.4, b);
             pen.fill_c(19.0, 3.0, 1.4, b);
+        }
+        Aerial => {
+            pen.poly(&[(3.0, 5.0), (21.0, 5.0), (21.0, 19.0), (3.0, 19.0)], true, a);
+            pen.poly(&[(3.0, 16.0), (8.0, 11.0), (12.0, 15.0), (16.0, 10.0), (21.0, 15.0)], false, b);
+            pen.c(16.5, 8.5, 1.6, b);
+            pen.l(12.0, 2.0, 12.0, 5.0);
+            pen.l(12.0, 19.0, 12.0, 22.0);
         }
         RoadProfile => {
             pen.poly(&[(3.0, 15.0), (7.0, 17.0), (11.0, 13.0), (15.0, 16.0), (21.0, 12.0)], false, b);
