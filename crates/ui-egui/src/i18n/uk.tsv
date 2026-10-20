@@ -1455,3 +1455,7 @@
 	station and both slopes are numbers	пікет і обидва ухили — числа
 	slopes are within 30 %	ухили в межах 30 %
 	Slope of each side's lanes, rising outwards is positive: -2 / -2 is the normal crown, 6 / -6 falls to the right.	Ухил смуг кожного боку, підйом назовні — додатний: -2 / -2 — звичайний двосхилий профіль, 6 / -6 — похил праворуч.
+	Design speed	Розрахункова швидкість
+	Maximum superelevation (%)	Найбільший віраж (%)
+	Side friction	Коефіцієнт поперечного зчеплення
+	Give superelevation rows or a design speed, not both.	Вкажіть або рядки віражу, або розрахункову швидкість, але не обидва.

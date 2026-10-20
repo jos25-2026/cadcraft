@@ -1212,6 +1212,10 @@ struct RoadSecForm {
     columns: u32,
     /// Superelevation rows: station, left slope %, right slope % (empty rows are ignored).
     banking: Vec<[String; 3]>,
+    /// Design speed (km/h), maximum superelevation (%) and side friction: bank the alignment's curves.
+    speed: String,
+    emax: String,
+    friction: String,
     ditch_depth: String,
     ditch_width: String,
     ditch_slope: String,
@@ -1235,6 +1239,9 @@ impl Default for RoadSecForm {
             vscale: String::new(),
             columns: 3,
             banking: vec![Default::default(), Default::default()],
+            speed: String::new(),
+            emax: "6".into(),
+            friction: String::new(),
             ditch_depth: String::new(),
             ditch_width: "0.6".into(),
             ditch_slope: "3".into(),
@@ -1266,7 +1273,21 @@ fn roadsec_params(f: &RoadSecForm) -> Result<Value, String> {
         }
         rows.push(json!([sta, l, rt]));
     }
-    if !rows.is_empty() {
+    if !f.speed.trim().is_empty() {
+        if !rows.is_empty() {
+            return Err(crate::tl!("Give superelevation rows or a design speed, not both.").to_string());
+        }
+        put(&mut m, "designSpeed", &f.speed, "Design speed", positive).map_err(bad_field)?;
+        put(&mut m, "emax", &f.emax, "Maximum superelevation (%)", positive).map_err(bad_field)?;
+        put(&mut m, "friction", &f.friction, "Side friction", |t| {
+            let t = t.trim();
+            if t.is_empty() {
+                return Ok(None);
+            }
+            t.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(Some).ok_or(())
+        })
+        .map_err(bad_field)?;
+    } else if !rows.is_empty() {
         m.insert("superelevation".into(), Value::Array(rows));
     }
     put(&mut m, "startStation", &f.start, "Start station", number).map_err(bad_field)?;
@@ -1407,6 +1428,15 @@ pub fn roadsection(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
                 ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(140.0));
                 ui.end_row();
             }
+            for (label, text, hint) in [
+                ("Design speed", &mut f.speed, "km/h: banks the curves by itself"),
+                ("Maximum superelevation (%)", &mut f.emax, "6"),
+                ("Side friction", &mut f.friction, "by speed"),
+            ] {
+                ui.label(crate::i18n::t(label));
+                ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(140.0));
+                ui.end_row();
+            }
             ui.label(crate::tl!("Superelevation"));
             ui.vertical(|ui| {
                 egui::Grid::new("roadsection_banking").num_columns(3).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
@@ -1492,6 +1522,12 @@ mod tests {
         assert!(roadsec_params(&RoadSecForm { name: "L".into(), ..RoadSecForm::default() }).is_ok_and(|p| p.get("superelevation").is_none()));
         let half = RoadSecForm { name: "L".into(), banking: vec![["20".into(), "-2".into(), String::new()]], ..RoadSecForm::default() };
         assert!(roadsec_params(&half).is_err());
+        let auto = RoadSecForm { name: "L".into(), speed: "60".into(), ..RoadSecForm::default() };
+        let p = roadsec_params(&auto).unwrap_or_default();
+        assert_eq!((p["designSpeed"].clone(), p["emax"].clone()), (json!(60.0), json!(6.0)));
+        assert!(p.get("friction").is_none() && p.get("superelevation").is_none());
+        let both = RoadSecForm { speed: "60".into(), banking: vec![["20".into(), "-2".into(), "-2".into()]], ..auto.clone() };
+        assert!(roadsec_params(&both).is_err(), "rows and a design speed together");
         let steep = RoadSecForm { name: "L".into(), banking: vec![["20".into(), "40".into(), "-2".into()]], ..RoadSecForm::default() };
         assert!(roadsec_params(&steep).is_err());
     }

@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use super::draw::make_text;
 use super::mapgrid::{default_extent, nice_spacing};
 use super::terrain::{handles_param, layer_name, surface};
-use super::xsection::{CENTERLINE_PREFIX, Index, centerline, locate, station};
+use super::xsection::{CENTERLINE_PREFIX, Index, centerline, centerline_layer, line_of, locate, station};
 use super::*;
 use crate::{Result, Session};
 
@@ -48,9 +48,13 @@ pub fn specs() -> Vec<CommandSpec> {
                  fillSlope?: (2), reach?: farthest side-slope run from the shoulder (60), vScale?: 1, columns?: 3, at?, textHeight?, handles?, layerPrefix?: \"RS\", \
                  superelevation?: [[station, leftPercent, rightPercent], ...] (the slope of the lanes on each side, rising outwards from the crown is positive; \
                  -2, -2 is the normal crown, 6, -6 banks the road to fall to the right; linear between stations, the normal crown outside them), \
+                 designSpeed?: km/h: instead of `superelevation` rows, bank every horizontal curve of the centerline (ROADALIGN) for this speed: \
+                 e = V^2 / (127 R) - f up to emax? (6 %), with the runoff length from the maximum relative gradient, 80 % of it ahead of the curve, \
+                 friction?: side friction factor (by speed), \
                  ditchDepth?: depth of a roadside ditch below the shoulder edge on cut sides (0, none), ditchWidth?: its flat bottom (0.6), \
                  ditchSlope?: its inner side slope, horizontal per 1 vertical (3), shade?: hatch the cut and fill areas (true)} \
-                 → {sections: [{station, ground, design, cut, fill, daylightLeft, daylightRight, slopeLeft, slopeRight}], cutVolume, fillVolume}",
+                 → {sections: [{station, ground, design, cut, fill, daylightLeft, daylightRight, slopeLeft, slopeRight}], cutVolume, fillVolume, \
+                 superelevation?: {curves: [{radius, direction, required, e, runoff, runout, fullFrom, fullTo, minRadius}], rows, warnings}}",
             ),
     ]
 }
@@ -639,6 +643,182 @@ fn parse_super(p: &Value) -> Result<Vec<(f64, f64, f64)>> {
     Ok(out)
 }
 
+/// A circular arc of the centerline.
+struct Arc {
+    tc: f64,
+    ct: f64,
+    radius: f64,
+    left: bool,
+    delta: f64,
+}
+
+/// The circular arcs of a named centerline drawn by ROADALIGN (polyline bulges), with their stations.
+fn arcs_of(s: &Session, name: &str, start: f64) -> Result<Vec<Arc>> {
+    let layer = centerline_layer("roadsection", name)?;
+    let d = s.doc()?;
+    let Some(e) = d.model.iter().filter(|e| e.common.layer.eq_ignore_ascii_case(&layer)).find(|e| line_of(s, e.handle).is_some()) else {
+        return Ok(Vec::new());
+    };
+    let EntityKind::LwPolyline(pl) = &e.kind else { return Ok(Vec::new()) };
+    let n = pl.vertices.len();
+    let segs = if pl.closed { n } else { n.saturating_sub(1) };
+    let (mut out, mut cum) = (Vec::new(), 0.0);
+    for i in 0..segs {
+        let (Some(a), Some(b)) = (pl.vertices.get(i), pl.vertices.get((i + 1) % n.max(1))) else { break };
+        let chord = a.p.dist(b.p);
+        if a.bulge.abs() > 1e-12 && a.bulge.is_finite() {
+            let sweep = 4.0 * a.bulge.abs().atan();
+            let sin = (sweep / 2.0).sin();
+            if sin > 1e-9 && chord > 0.0 {
+                let r = chord / (2.0 * sin);
+                let len = r * sweep;
+                if r.is_finite() && len.is_finite() {
+                    out.push(Arc { tc: start + cum, ct: start + cum + len, radius: r, left: a.bulge > 0.0, delta: sweep });
+                    cum += len;
+                    continue;
+                }
+            }
+        }
+        cum += chord;
+    }
+    Ok(out)
+}
+
+/// Side friction factor by design speed (km/h), interpolated.
+fn side_friction(v: f64) -> f64 {
+    interp(&[(30.0, 0.17), (50.0, 0.16), (60.0, 0.15), (70.0, 0.14), (80.0, 0.14), (90.0, 0.13), (100.0, 0.12), (110.0, 0.10), (120.0, 0.09)], v)
+}
+/// The maximum relative gradient of the pavement edge (fraction) by design speed (km/h).
+fn relative_gradient(v: f64) -> f64 {
+    interp(
+        &[
+            (20.0, 0.80),
+            (30.0, 0.75),
+            (40.0, 0.70),
+            (50.0, 0.65),
+            (60.0, 0.60),
+            (70.0, 0.55),
+            (80.0, 0.50),
+            (90.0, 0.47),
+            (100.0, 0.44),
+            (110.0, 0.41),
+            (120.0, 0.38),
+        ],
+        v,
+    ) / 100.0
+}
+fn interp(t: &[(f64, f64)], x: f64) -> f64 {
+    match (t.first(), t.last()) {
+        (Some(a), _) if x <= a.0 => a.1,
+        (_, Some(b)) if x >= b.0 => b.1,
+        _ => {
+            let i = t.partition_point(|r| r.0 <= x).saturating_sub(1);
+            match (t.get(i), t.get(i + 1)) {
+                (Some(a), Some(b)) => a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0),
+                _ => 0.0,
+            }
+        }
+    }
+}
+
+struct AutoSuper {
+    rows: Vec<(f64, f64, f64)>,
+    curves: Vec<Value>,
+    warnings: Vec<String>,
+}
+
+/// Bank every curve for the design speed: the superelevation `e = V^2 / (127 R) - f` (to the nearest
+/// 0.1 % above, at most `emax`), with the outside lane levelled over the tangent runout, then raised
+/// over the runoff (the maximum relative gradient), 80 % of the runoff ahead of the curve; the inside
+/// lane follows once the outside lane has the normal slope. `crossfall` is a fraction.
+fn auto_super(arcs: &[Arc], v: f64, emax: f64, friction: f64, crossfall: f64, lane_w: f64, lanes: f64) -> AutoSuper {
+    let mut out = AutoSuper { rows: Vec::new(), curves: Vec::new(), warnings: Vec::new() };
+    let bw = (1.0 + 0.5 * (lanes - 1.0)) / lanes;
+    let rel = relative_gradient(v);
+    let mut last_full: Option<(usize, bool)> = None; // index of the previous exit's full row, its direction
+    for a in arcs {
+        let required = v * v / (127.0 * a.radius) - friction;
+        let rmin = v * v / (127.0 * (emax + friction));
+        let dir = if a.left { "left" } else { "right" };
+        let mut info = json!({
+            "radius": a.radius, "direction": dir, "delta": a.delta.to_degrees(), "tcStation": a.tc, "ctStation": a.ct,
+            "required": required * 100.0, "minRadius": rmin,
+        });
+        if a.radius < rmin - 1e-9 {
+            out.warnings.push(format!(
+                "the curve at station {:.2} has radius {:.1}, below the minimum {:.1} for {v} km/h: banked at the maximum",
+                a.tc, a.radius, rmin
+            ));
+        }
+        let e = ((required.min(emax) * 1000.0).ceil() / 1000.0).min(emax);
+        if e <= crossfall + 1e-9 {
+            if let Some(o) = info.as_object_mut() {
+                o.insert("e".into(), json!(null));
+                o.insert("note".into(), json!("normal crown"));
+            }
+            out.curves.push(info);
+            continue;
+        }
+        let lr = lane_w * lanes * bw * e / rel;
+        let lt = lr * crossfall / e;
+        let full_in = a.tc + 0.2 * lr;
+        let mut full_out = a.ct - 0.2 * lr;
+        if full_out < full_in {
+            out.warnings.push(format!("the curve at station {:.2} is shorter than the transition: full banking is never reached", a.tc));
+            let mid = (a.tc + a.ct) / 2.0;
+            full_out = mid;
+        }
+        let full_in = full_in.min(full_out);
+        // (station, outside slope, inside slope) in the outside-first convention.
+        let entry = [
+            (full_in - lr - lt, -crossfall, -crossfall),
+            (full_in - lr, 0.0, -crossfall),
+            (full_in - lr * (1.0 - crossfall / e), crossfall, -crossfall),
+            (full_in, e, -e),
+        ];
+        let exit = [
+            (full_out, e, -e),
+            (full_out + lr * (1.0 - crossfall / e), crossfall, -crossfall),
+            (full_out + lr, 0.0, -crossfall),
+            (full_out + lr + lt, -crossfall, -crossfall),
+        ];
+        let mut entry: Vec<_> = entry.to_vec();
+        if let Some((idx, prev_left)) = last_full {
+            let prev_sta = out.rows.get(idx).map_or(f64::NEG_INFINITY, |r| r.0);
+            let tail = out.rows.last().map_or(f64::NEG_INFINITY, |r| r.0);
+            if entry[0].0 <= tail + 1e-6 {
+                if full_in <= prev_sta + 1e-6 {
+                    out.warnings.push(format!("the curve at station {:.2} overlaps the previous curve's banking: left level", a.tc));
+                    out.curves.push(info);
+                    continue;
+                }
+                out.rows.truncate(idx + 1);
+                entry.drain(..3);
+                if prev_left != a.left {
+                    out.warnings.push(format!(
+                        "the tangent before station {:.2} is shorter than a full runoff: the banking reverses in less than {lr:.1}",
+                        a.tc
+                    ));
+                }
+            }
+        }
+        // The outside lane is the left one on a right-hand curve.
+        let mk = |t: (f64, f64, f64)| if a.left { (t.0, t.2, t.1) } else { (t.0, t.1, t.2) };
+        out.rows.extend(entry.into_iter().map(mk));
+        out.rows.extend(exit.into_iter().map(mk));
+        last_full = Some((out.rows.len().saturating_sub(4), a.left));
+        if let Some(o) = info.as_object_mut() {
+            o.insert("e".into(), json!(e * 100.0));
+            o.insert("runoff".into(), json!(lr));
+            o.insert("runout".into(), json!(lt));
+            o.insert("fullFrom".into(), json!(full_in));
+            o.insert("fullTo".into(), json!(full_out));
+        }
+        out.curves.push(info);
+    }
+    out
+}
+
 /// The lane slopes at a station, interpolated linearly between rows; `None` outside the table
 /// (the normal crown).
 fn super_at(table: &[(f64, f64, f64)], sta: f64) -> Option<(f64, f64)> {
@@ -781,7 +961,28 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
     let ditch_depth = size_param("roadsection", p, "ditchDepth", true)?.unwrap_or(0.0);
     let ditch_width = size_param("roadsection", p, "ditchWidth", true)?.unwrap_or(0.6);
     let ditch_slope = size_param("roadsection", p, "ditchSlope", false)?.unwrap_or(3.0);
-    let supers = parse_super(p)?;
+    let mut supers = parse_super(p)?;
+    let mut auto: Option<AutoSuper> = None;
+    if let Some(v) = size_param("roadsection", p, "designSpeed", false)? {
+        if !supers.is_empty() {
+            return Err(bad("roadsection", "give `superelevation` rows or a `designSpeed`, not both"));
+        }
+        if !(20.0..=160.0).contains(&v) {
+            return Err(bad("roadsection", "`designSpeed` is 20 to 160 km/h"));
+        }
+        let emax = size_param("roadsection", p, "emax", false)?.unwrap_or(6.0);
+        if !(1.0..=12.0).contains(&emax) {
+            return Err(bad("roadsection", "`emax` is 1 to 12 (%)"));
+        }
+        let f = size_param("roadsection", p, "friction", true)?.unwrap_or_else(|| side_friction(v));
+        if f > 1.0 {
+            return Err(bad("roadsection", "`friction` is 0 to 1"));
+        }
+        let a = auto_super(&arcs_of(s, name, start)?, v, emax / 100.0, f, crossfall, lane_w, lanes);
+        supers = a.rows.clone();
+        supers.sort_by(|x, y| x.0.total_cmp(&y.0));
+        auto = Some(a);
+    }
     let shade = bool_or(p, "shade", true);
     let vscale = size_param("roadsection", p, "vScale", false)?.unwrap_or(1.0);
     if ![interval, lane_w, shoulder, crossfall, shoulder_fall, cut_slope, fill_slope, reach, vscale, start, ditch_depth, ditch_width, ditch_slope]
@@ -1149,6 +1350,11 @@ fn run_roadsection(s: &mut Session, p: &Value) -> Result<Value> {
     let _ = CENTERLINE_PREFIX;
     Ok(json!({
         "sections": table, "cutVolume": cum_cut, "fillVolume": cum_fill, "incomplete": incomplete,
+        "superelevation": auto.as_ref().map(|a| json!({
+            "curves": a.curves,
+            "rows": a.rows.iter().map(|r| json!([r.0, r.1 * 100.0, r.2 * 100.0])).collect::<Vec<_>>(),
+            "warnings": a.warnings,
+        })),
         "sheetAt": [origin.x, origin.y], "cell": [cw, ch], "objects": n_items, "message": msg,
     }))
 }

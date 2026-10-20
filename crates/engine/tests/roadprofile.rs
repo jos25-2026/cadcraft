@@ -235,3 +235,80 @@ fn bad_ditches_and_superelevations_are_refused() {
     }
     assert_eq!(s.doc().unwrap().model.iter().count(), n);
 }
+
+/// The grid of `site()` with a left-hand curve of radius 60 from a roadalign: east 40, then 36.87 degrees left.
+fn curved(radius: f64) -> Session {
+    let mut s = site();
+    s.execute("roadalign", &json!({ "pis": [[10, 50], [50, 50, radius], [90, 80]], "name": "Bend", "labels": false })).unwrap();
+    s
+}
+
+#[test]
+fn the_design_speed_banks_the_curves_of_the_alignment() {
+    let mut s = curved(60.0);
+    let r = s
+        .execute("roadsection", &json!({ "name": "Bend", "pvis": [[0, 5, 0], [88, 5, 0]], "interval": 10, "designSpeed": 40, "reach": 20 }))
+        .unwrap();
+    let c = &r["superelevation"]["curves"][0];
+    // f = 0.165 at 40 km/h: e = 40^2 / (127 * 60) - 0.165 = 4.5 % (rounded up to 0.1 %);
+    // runoff 3.5 * 0.045 / 0.007 = 22.5 m, runout 22.5 * 2 / 4.5 = 10 m.
+    assert_eq!(c["direction"], "left");
+    assert!((c["e"].as_f64().unwrap() - 4.5).abs() < 1e-9, "{c}");
+    assert!((c["runoff"].as_f64().unwrap() - 22.5).abs() < 1e-9 && (c["runout"].as_f64().unwrap() - 10.0).abs() < 1e-9);
+    let tc = c["tcStation"].as_f64().unwrap();
+    assert!((tc - 20.0).abs() < 1e-6, "the curve begins after 20 m of straight: {tc}");
+    assert!((c["fullFrom"].as_f64().unwrap() - (tc + 4.5)).abs() < 1e-9, "80 % of the runoff comes before the curve");
+    let secs = r["sections"].as_array().unwrap();
+    let at = |i: usize, k: &str| secs[i][k].as_f64().unwrap();
+    // Station 0: the outside (right) lane is rising to level; the inside lane keeps the crown.
+    assert!((at(0, "slopeLeft") + 2.0).abs() < 1e-9 && (at(0, "slopeRight") + 0.4).abs() < 1e-9, "{}", secs[0]);
+    // Station 30 is fully banked, falling to the left (the inside of a left curve).
+    assert!((at(3, "slopeLeft") + 4.5).abs() < 1e-9 && (at(3, "slopeRight") - 4.5).abs() < 1e-9, "{}", secs[3]);
+    // Station 80 is on the way back to the crown.
+    let b2 = c["fullTo"].as_f64().unwrap() + 22.5;
+    assert!((at(8, "slopeLeft") + 2.0).abs() < 1e-9 && (at(8, "slopeRight") + 2.0 * (80.0 - b2) / 10.0).abs() < 1e-6, "{}", secs[8]);
+    assert!(r["superelevation"]["warnings"].as_array().unwrap().is_empty());
+    // A faster road needs more banking, up to the maximum, and warns when the curve is too sharp.
+    let f = s
+        .execute(
+            "roadsection",
+            &json!({ "name": "Bend", "pvis": [[0, 5, 0], [88, 5, 0]], "interval": 40, "designSpeed": 80, "reach": 20, "layerPrefix": "RF" }),
+        )
+        .unwrap();
+    assert!((f["superelevation"]["curves"][0]["e"].as_f64().unwrap() - 6.0).abs() < 1e-9);
+    assert!(!f["superelevation"]["warnings"].as_array().unwrap().is_empty(), "radius 60 is below the minimum for 80 km/h");
+    // A gentle curve at a low speed stays on the normal crown.
+    let g = curved_gentle();
+    assert!(g["superelevation"]["curves"][0]["e"].is_null(), "{g}");
+}
+
+fn curved_gentle() -> serde_json::Value {
+    let mut s = curved(60.0);
+    s.execute("roadsection", &json!({ "name": "Bend", "pvis": [[0, 5, 0], [88, 5, 0]], "interval": 40, "designSpeed": 25, "reach": 20 })).unwrap()
+}
+
+#[test]
+fn the_design_speed_is_checked() {
+    let mut s = curved(60.0);
+    let n = s.doc().unwrap().model.iter().count();
+    let base = json!({ "name": "Bend", "pvis": [[0, 5, 0], [88, 5, 0]], "reach": 20 });
+    for bad in [
+        json!({"designSpeed": 5}),
+        json!({"designSpeed": 400}),
+        json!({"designSpeed": "fast"}),
+        json!({"designSpeed": 50, "emax": 50}),
+        json!({"designSpeed": 50, "friction": 3}),
+        json!({"designSpeed": 50, "superelevation": [[0, -2, -2], [10, 2, -2]]}),
+    ] {
+        let mut p = base.clone();
+        for (k, v) in bad.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        assert!(s.execute("roadsection", &p).is_err(), "{bad}");
+    }
+    assert_eq!(s.doc().unwrap().model.iter().count(), n);
+    // A straight centerline has no curves to bank.
+    let mut t = site();
+    let r = t.execute("roadsection", &json!({ "name": "Road", "pvis": [[0, 5, 0], [80, 5, 0]], "interval": 40, "designSpeed": 60 })).unwrap();
+    assert!(r["superelevation"]["curves"].as_array().unwrap().is_empty());
+}
