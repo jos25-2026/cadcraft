@@ -112,3 +112,32 @@ fn sections_follow_the_arc_of_a_curved_alignment() {
     assert!(near(last, 100.0 + 30.0 * std::f64::consts::FRAC_PI_2, 0.1), "{last}");
     assert_eq!(r["sections"], 9);
 }
+
+#[test]
+fn the_pis_can_come_from_a_line_or_polyline_on_any_layer() {
+    let mut s = Session::new();
+    // A plain polyline on its own layer (here made as a sharp alignment, which is one).
+    s.execute("roadalign", &json!({ "pis": [[0, 0], [100, 0], [100, 100]], "radius": 0, "name": "Sketch" })).unwrap();
+    let handle = s
+        .doc()
+        .unwrap()
+        .model
+        .iter()
+        .find(|e| e.common.layer == "CL-Sketch" && matches!(e.kind, EntityKind::LwPolyline(_)))
+        .map(|e| e.handle.hex())
+        .unwrap();
+    let r = s.execute("roadalign", &json!({ "from": handle, "radius": 20, "name": "Road" })).unwrap();
+    assert_eq!(r["curves"].as_array().unwrap().len(), 1);
+    assert!(near(r["curves"][0]["tangent"].as_f64().unwrap(), 20.0, 1e-9));
+    // The same PIs from the sketch by name; the sketch itself stays as it was.
+    let r = s.execute("roadalign", &json!({ "fromName": "sketch", "radius": 10, "name": "Road2" })).unwrap();
+    assert!(near(r["curves"][0]["tangent"].as_f64().unwrap(), 10.0, 1e-9));
+    assert_eq!(layer_count(&s, "CL-Sketch"), 1);
+    // A line from a layer of the drawing's own works too.
+    s.execute("line", &json!({ "points": [[0, 0], [50, 0]] })).unwrap();
+    let line = s.doc().unwrap().model.iter().find(|e| matches!(e.kind, EntityKind::Line(_))).map(|e| e.handle.hex()).unwrap();
+    assert!(s.execute("roadalign", &json!({ "from": line, "name": "L" })).is_ok());
+    for p in [json!({ "from": "ZZ" }), json!({ "from": "1" }), json!({ "fromName": "nothing" })] {
+        assert!(s.execute("roadalign", &p).is_err(), "{p}");
+    }
+}

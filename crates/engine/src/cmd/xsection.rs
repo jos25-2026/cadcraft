@@ -609,6 +609,13 @@ impl Interactive for ClM {
             p
         }
     }
+    fn preview(&self, _s: &Session, cursor: Vec2) -> Vec<EntityKind> {
+        if self.pts.is_empty() || self.naming {
+            return Vec::new();
+        }
+        let vs = self.pts.iter().copied().chain(std::iter::once(cursor)).map(cadcraft_geom::PolyVertex::new).collect();
+        vec![super::helpers::lwpoly(vs, false)]
+    }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         match i {
             Input::Cancel => Ok(Step::Cancel),

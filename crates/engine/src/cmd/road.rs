@@ -5,7 +5,7 @@
 //! lists each curve (PI, TC and CT stations, R, Δ, T, L, E) and can mark the stations.
 
 use cadcraft_color::Color;
-use cadcraft_doc::{Common, EntityKind, HAlign, Line, LwPolyline, VAlign};
+use cadcraft_doc::{Common, EntityKind, HAlign, Handle, Line, LwPolyline, VAlign};
 use cadcraft_geom::{PolyVertex, Vec2, Vec3};
 use serde_json::{Value, json};
 
@@ -28,7 +28,8 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["alignmentcurves", "horizontalcurves", "hcurve"])
             .menu(&["Tools", "Road", "Horizontal Alignment..."])
             .params(
-                "{pis: [[x, y] or [x, y, radius], ...] (the first and last are the ends, the others the PIs), radius?: for PIs without one \
+                "{pis?: [[x, y] or [x, y, radius], ...] (the first and last are the ends, the others the PIs), from?: handle of a line or polyline \
+                 on any layer whose vertices are the PIs (instead of `pis`), fromName?: the name of a centerline to take the PIs from, radius?: for PIs without one \
                  (default 100; 0 leaves a sharp corner), name?: the centerline's name (default: the next Line 1A, Line 2A, ...), \
                  startStation?: 0, ticks?: draw station marks every this much (true: a round number), textHeight?, labels?: true (curve data at the PIs)} \
                  → {name, length, curves: [{pi, tc, ct, radius, delta, tangent, length, external, piStation, tcStation, ctStation}]}",
@@ -192,15 +193,47 @@ fn point3(v: &Value) -> Option<(Vec2, Option<f64>)> {
     (x.is_finite() && y.is_finite() && x.abs() <= MAX_COORD && y.abs() <= MAX_COORD).then_some((Vec2::new(x, y), r))
 }
 
+/// The vertices of a line or polyline on any layer, where its PIs are (an arc in it counts as a straight leg).
+fn vertices_of(s: &Session, h: Handle) -> Option<Vec<Vec2>> {
+    let d = s.doc().ok()?;
+    let pts: Vec<Vec2> = match &d.entity(h)?.kind {
+        EntityKind::Line(l) => vec![Vec2::new(l.a.x, l.a.y), Vec2::new(l.b.x, l.b.y)],
+        EntityKind::LwPolyline(pl) => pl.vertices.iter().map(|v| v.p).collect(),
+        EntityKind::Polyline3d(pl) => pl.points.iter().map(|p| Vec2::new(p.x, p.y)).collect(),
+        _ => return None,
+    };
+    (pts.len() <= MAX_PIS).then_some(pts)
+}
+
 fn run_align(s: &mut Session, p: &Value) -> Result<Value> {
-    let arr = p.get("pis").and_then(Value::as_array).ok_or_else(|| bad("roadalign", "`pis` ([[x, y, radius?], ...]) is required"))?;
-    if arr.len() < 2 || arr.len() > MAX_PIS {
-        return Err(bad("roadalign", format!("`pis` needs 2 to {MAX_PIS} points")));
+    let source: Option<Vec<Vec2>> = if let Some(t) = str_param(p, "from") {
+        let h = Handle::parse_hex(t).ok_or_else(|| bad("roadalign", "`from` is not a handle"))?;
+        Some(vertices_of(s, h).ok_or_else(|| bad("roadalign", "`from` must be a line or polyline"))?)
+    } else if let Some(n) = str_param(p, "fromName") {
+        let layer = centerline_layer("roadalign", n)?;
+        let found = s.doc()?.model.iter().filter(|e| e.common.layer.eq_ignore_ascii_case(&layer)).find_map(|e| vertices_of(s, e.handle));
+        Some(found.ok_or_else(|| bad("roadalign", format!("no centerline named \"{}\"", n.trim())))?)
+    } else {
+        None
+    };
+    let given: Vec<(Vec2, Option<f64>)> = match source {
+        Some(v) => v.into_iter().map(|q| (q, None)).collect(),
+        None => {
+            let arr = p
+                .get("pis")
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad("roadalign", "`pis` ([[x, y, radius?], ...]), `from` (a handle) or `fromName` is required"))?;
+            if arr.len() > MAX_PIS {
+                return Err(bad("roadalign", format!("`pis` needs 2 to {MAX_PIS} points")));
+            }
+            arr.iter()
+                .map(|v| point3(v).ok_or_else(|| bad("roadalign", "`pis` must be [x, y] or [x, y, radius] numbers (radius zero or more)")))
+                .collect::<Result<_>>()?
+        }
+    };
+    if given.iter().any(|(q, _)| !(q.x.is_finite() && q.y.is_finite() && q.x.abs() <= MAX_COORD && q.y.abs() <= MAX_COORD)) {
+        return Err(bad("roadalign", "the line has invalid coordinates"));
     }
-    let given: Vec<(Vec2, Option<f64>)> = arr
-        .iter()
-        .map(|v| point3(v).ok_or_else(|| bad("roadalign", "`pis` must be [x, y] or [x, y, radius] numbers (radius zero or more)")))
-        .collect::<Result<_>>()?;
     let default_r = match p.get("radius") {
         None | Some(Value::Null) => DEFAULT_RADIUS,
         Some(v) => {
@@ -350,9 +383,20 @@ impl Interactive for AlignM {
     fn name(&self) -> &'static str {
         "ROADALIGN"
     }
+    fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        // A line or polyline already selected gives the PIs straight away.
+        if let Some(v) = s.selection().into_iter().find_map(|h| vertices_of(s, h)).map(|v| distinct_points(&v)).filter(|v| v.len() >= 2) {
+            self.pts = v;
+            self.step = 1;
+            s.set_selection(Vec::new());
+        }
+        Ok(Step::Continue)
+    }
     fn prompt(&self, s: &Session) -> Prompt {
         match self.step {
-            0 if self.pts.is_empty() => Prompt::new("Specify the start of the alignment", Accept::POINT),
+            0 if self.pts.is_empty() => {
+                Prompt::new("Select a line or polyline for the PIs (any layer), or click the start of the alignment", Accept::SELECT)
+            }
             0 => {
                 let mut p = Prompt::new("Specify the next PI, or the end (Enter to finish)", Accept::POINT);
                 p.base = self.pts.last().copied();
@@ -370,9 +414,26 @@ impl Interactive for AlignM {
             }
         }
     }
+    fn preview(&self, _s: &Session, cursor: Vec2) -> Vec<EntityKind> {
+        if self.pts.is_empty() || self.step != 0 {
+            return Vec::new();
+        }
+        let vs = self.pts.iter().copied().chain(std::iter::once(cursor)).map(cadcraft_geom::PolyVertex::new).collect();
+        vec![super::helpers::lwpoly(vs, false)]
+    }
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         match (self.step, i) {
             (_, Input::Cancel) => Ok(Step::Cancel),
+            (0, Input::Pick(hs)) if self.pts.is_empty() => {
+                match hs.into_iter().find_map(|h| vertices_of(s, h)).map(|v| distinct_points(&v)).filter(|v| v.len() >= 2) {
+                    Some(v) => {
+                        self.pts = v;
+                        self.step = 1;
+                    }
+                    None => s.echo("Pick a line or a polyline with at least two different points.".to_string()),
+                }
+                Ok(Step::Continue)
+            }
             (0, Input::Point(q)) => {
                 self.pts.push(q);
                 Ok(Step::Continue)
