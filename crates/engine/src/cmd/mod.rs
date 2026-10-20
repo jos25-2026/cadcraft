@@ -36,6 +36,7 @@ pub mod plotters;
 mod props;
 mod terrain;
 pub use props::MatchProps;
+mod profile;
 mod qselect;
 mod road;
 mod selecttools;
@@ -210,6 +211,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(trees::specs());
         v.extend(xsection::specs());
         v.extend(road::specs());
+        v.extend(profile::specs());
         v.extend(imageattach::specs());
         v.extend(earthwork::specs());
         v.extend(mapgrid::specs());

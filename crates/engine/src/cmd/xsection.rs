@@ -52,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// Triangles binned on a grid so a point finds its triangle without scanning all of them.
-struct Index<'a> {
+pub(super) struct Index<'a> {
     tris: &'a [[Vec3; 3]],
     min: Vec2,
     cell: f64,
@@ -61,7 +61,7 @@ struct Index<'a> {
 }
 
 impl<'a> Index<'a> {
-    fn new(tris: &'a [[Vec3; 3]]) -> Option<Self> {
+    pub(super) fn new(tris: &'a [[Vec3; 3]]) -> Option<Self> {
         let (mut lo, mut hi) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
         for v in tris.iter().flatten() {
             lo = Vec2::new(lo.x.min(v.x), lo.y.min(v.y));
@@ -93,7 +93,7 @@ impl<'a> Index<'a> {
     }
 
     /// The surface height at (x, y); `None` outside the surface.
-    fn z(&self, x: f64, y: f64) -> Option<f64> {
+    pub(super) fn z(&self, x: f64, y: f64) -> Option<f64> {
         let (fx, fy) = ((x - self.min.x) / self.cell, (y - self.min.y) / self.cell);
         if !(fx.is_finite() && fy.is_finite() && fx >= 0.0 && fy >= 0.0) {
             return None;
@@ -118,7 +118,7 @@ impl<'a> Index<'a> {
 }
 
 /// The centerline vertices of a line or polyline (curved segments run straight between vertices).
-fn line_of(s: &Session, h: Handle) -> Option<Vec<Vec2>> {
+pub(super) fn line_of(s: &Session, h: Handle) -> Option<Vec<Vec2>> {
     let d = s.doc().ok()?;
     let pts: Vec<Vec2> = match &d.entity(h)?.kind {
         EntityKind::Line(l) => vec![Vec2::new(l.a.x, l.a.y), Vec2::new(l.b.x, l.b.y)],
@@ -181,7 +181,7 @@ fn run_centerline(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "name": name, "layer": layer, "length": length, "points": pts.len(), "message": msg }))
 }
 
-fn centerline(s: &Session, p: &Value) -> Result<Vec<Vec2>> {
+pub(super) fn centerline(s: &Session, p: &Value) -> Result<Vec<Vec2>> {
     let raw: Vec<Vec2> = if let Some(a) = p.get("points").and_then(Value::as_array) {
         if a.len() > MAX_VERTS {
             return Err(bad("xsection", format!("more than {MAX_VERTS} centerline points")));
@@ -206,12 +206,12 @@ fn centerline(s: &Session, p: &Value) -> Result<Vec<Vec2>> {
 }
 
 /// Station text: kilometres + metres, `1+250.00`.
-fn station(s: f64) -> String {
+pub(super) fn station(s: f64) -> String {
     format!("{}+{:06.2}", (s / 1000.0).floor() as i64, s.rem_euclid(1000.0))
 }
 
 /// Position and unit direction of the centerline at distance `at` along it.
-fn locate(line: &[Vec2], cum: &[f64], at: f64) -> (Vec2, Vec2) {
+pub(super) fn locate(line: &[Vec2], cum: &[f64], at: f64) -> (Vec2, Vec2) {
     let i = cum.partition_point(|c| *c <= at).saturating_sub(1).min(line.len().saturating_sub(2));
     let (a, b) = (line[i], line[i + 1]);
     let len = (b - a).len().max(f64::MIN_POSITIVE);
