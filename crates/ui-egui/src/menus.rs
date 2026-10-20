@@ -422,6 +422,16 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             app.ui.dialog = Some("xsection".into());
             Ok(Value::Null)
         }
+        // From the menu or an icon: pick the PIs, then the settings dialog (with its picture).
+        "roadalign" | "alignmentcurves" | "horizontalcurves" | "hcurve" if params.is_null() && app.session.state().is_ok() => {
+            app.session.align_dialog = true;
+            app.session.align_pending = None;
+            if let Err(e) = app.session.start("roadalign") {
+                app.session.align_dialog = false;
+                app.session.echo(e.to_string());
+            }
+            Ok(Value::Null)
+        }
         "trees" | "planttrees" | "treesymbols" if params.is_null() && app.session.state().is_ok() => {
             app.ui.dialog = Some("trees".into());
             Ok(Value::Null)

@@ -672,6 +672,11 @@ pub struct Session {
     lisp_last: Option<std::result::Result<lisp::value::Value, String>>,
     /// What the last HATCHPICK kept (the Hatch and Gradient dialog's picks).
     pub hatch_picks: Option<cmd::hatch::HatchPicks>,
+    /// Set by the UI before ROADALIGN: once the PIs are chosen the command hands them over in
+    /// [`Session::align_pending`] (for its settings dialog) instead of asking at the command line.
+    pub align_dialog: bool,
+    /// The PIs ROADALIGN chose for the settings dialog.
+    pub align_pending: Option<Vec<Vec2>>,
 }
 
 impl Default for Session {
@@ -720,6 +725,8 @@ impl Session {
             lisp: lisp::LispState::default(),
             lisp_last: None,
             hatch_picks: None,
+            align_dialog: false,
+            align_pending: None,
         }
     }
     pub fn new_drawing(&mut self, metric: bool) -> usize {

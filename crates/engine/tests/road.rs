@@ -141,3 +141,36 @@ fn the_pis_can_come_from_a_line_or_polyline_on_any_layer() {
         assert!(s.execute("roadalign", &p).is_err(), "{p}");
     }
 }
+
+#[test]
+fn the_ui_can_take_the_pis_for_its_dialog_instead_of_the_command_line_questions() {
+    let mut s = Session::new();
+    s.align_dialog = true;
+    assert!(s.start("roadalign").is_ok());
+    for t in ["0,0", "100,0", "100,100"] {
+        assert!(s.cmdline(t).is_ok());
+    }
+    assert!(s.cmdline("").is_ok());
+    let pis = s.align_pending.take().unwrap_or_default();
+    assert_eq!(pis.len(), 3);
+    assert!(s.running.is_none(), "the command ended");
+    assert_eq!(layer_count(&s, "CL-Line 1A"), 0, "nothing is drawn until the dialog's OK");
+    // Without the flag it asks at the command line, as before.
+    assert!(s.start("roadalign").is_ok());
+    for t in ["0,0", "100,0", ""] {
+        assert!(s.cmdline(t).is_ok());
+    }
+    assert!(s.running.is_some() && s.align_pending.is_none());
+}
+
+#[test]
+fn an_existing_line_can_be_selected_at_the_start_prompt() {
+    let mut s = Session::new();
+    assert!(s.execute("line", &json!({ "points": [[0, 0], [100, 0], [100, 100]] })).is_ok());
+    assert!(s.start("roadalign").is_ok());
+    assert!(s.cmdline("select").is_ok());
+    assert!(s.cmdline("last").is_ok());
+    assert!(s.cmdline("100").is_ok(), "radius");
+    assert!(s.cmdline("Typed").is_ok(), "name");
+    assert_eq!(layer_count(&s, "CL-Typed"), 1);
+}

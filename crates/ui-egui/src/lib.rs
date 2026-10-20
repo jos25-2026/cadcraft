@@ -246,6 +246,8 @@ pub struct CadApp {
     pub gpu_notice: Option<autosave::GpuNotice>,
     /// The Hatch and Gradient dialog while open or picking ([`hatchdlg`]).
     pub hatch_dlg: Option<hatchdlg::HatchDlgState>,
+    /// The PIs of the Horizontal Alignment dialog.
+    pub align_pis: Vec<[f64; 2]>,
     /// The Edit Block Definition dialog ([`bedit`]).
     pub bedit: bedit::State,
 }
@@ -285,6 +287,7 @@ impl CadApp {
             gpu_faults: std::sync::Arc::default(),
             gpu_notice: None,
             hatch_dlg: None,
+            align_pis: Vec::new(),
             bedit: bedit::State::default(),
         }
     }
@@ -577,6 +580,7 @@ impl CadApp {
         self.gpu_fault_tick(ctx);
         managers::plot_window_resume(self, ctx);
         hatchdlg::resume(self);
+        surveydlg::align_resume(self);
         self.autosave_tick(ctx);
         menus::shortcuts(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]

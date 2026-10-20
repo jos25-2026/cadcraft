@@ -377,6 +377,21 @@ struct AlignM {
     /// 0 points, 1 radius, 2 name.
     step: u8,
     radius: Option<f64>,
+    /// The UI asked for its settings dialog after the PIs.
+    dialog: bool,
+    /// Picking an existing line or polyline for the PIs (a SELECT prompt makes a click on empty
+    /// space start a window, so the plain start prompt takes points only).
+    selecting: bool,
+}
+
+impl AlignM {
+    /// With the UI's dialog wanted, hand the PIs over and end the command.
+    fn hand_over(&self, s: &mut Session) -> bool {
+        if self.dialog {
+            s.align_pending = Some(self.pts.clone());
+        }
+        self.dialog
+    }
 }
 
 impl Interactive for AlignM {
@@ -384,19 +399,22 @@ impl Interactive for AlignM {
         "ROADALIGN"
     }
     fn begin(&mut self, s: &mut Session) -> Result<Step> {
+        self.dialog = std::mem::take(&mut s.align_dialog);
         // A line or polyline already selected gives the PIs straight away.
         if let Some(v) = s.selection().into_iter().find_map(|h| vertices_of(s, h)).map(|v| distinct_points(&v)).filter(|v| v.len() >= 2) {
             self.pts = v;
             self.step = 1;
             s.set_selection(Vec::new());
+            if self.hand_over(s) {
+                return Ok(Step::Done);
+            }
         }
         Ok(Step::Continue)
     }
     fn prompt(&self, s: &Session) -> Prompt {
         match self.step {
-            0 if self.pts.is_empty() => {
-                Prompt::new("Select a line or polyline for the PIs (any layer), or click the start of the alignment", Accept::SELECT)
-            }
+            0 if self.pts.is_empty() && self.selecting => Prompt::new("Select a line or polyline for the PIs (any layer)", Accept::SELECT),
+            0 if self.pts.is_empty() => Prompt::new("Specify the start of the alignment", Accept::POINT).kw(&["Select"]),
             0 => {
                 let mut p = Prompt::new("Specify the next PI, or the end (Enter to finish)", Accept::POINT);
                 p.base = self.pts.last().copied();
@@ -424,11 +442,18 @@ impl Interactive for AlignM {
     fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
         match (self.step, i) {
             (_, Input::Cancel) => Ok(Step::Cancel),
+            (0, Input::Keyword(k)) if self.pts.is_empty() && k == "Select" => {
+                self.selecting = true;
+                Ok(Step::Continue)
+            }
             (0, Input::Pick(hs)) if self.pts.is_empty() => {
                 match hs.into_iter().find_map(|h| vertices_of(s, h)).map(|v| distinct_points(&v)).filter(|v| v.len() >= 2) {
                     Some(v) => {
                         self.pts = v;
                         self.step = 1;
+                        if self.hand_over(s) {
+                            return Ok(Step::Done);
+                        }
                     }
                     None => s.echo("Pick a line or a polyline with at least two different points.".to_string()),
                 }
@@ -444,6 +469,9 @@ impl Interactive for AlignM {
                     return Ok(Step::Continue);
                 }
                 self.step = 1;
+                if self.hand_over(s) {
+                    return Ok(Step::Done);
+                }
                 Ok(Step::Continue)
             }
             (1, Input::Text(t)) if !t.trim().is_empty() => match t.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0) {

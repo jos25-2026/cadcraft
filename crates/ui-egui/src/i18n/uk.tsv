@@ -1411,3 +1411,13 @@
 	Horizontal Alignment...	Горизонтальне трасування...
 	Horizontal Alignment	Горизонтальне трасування
 	Road	Дорога
+	Alignment name	Назва траси
+	Curve radius	Радіус кривої
+	Radius per PI	Радіус на ВК
+	Different radius at a PI	Інший радіус на вершині
+	Start station	Початковий пікет
+	Station marks	Пікетні позначки
+	Mark every	Позначати кожні
+	Curve data at the PIs	Дані кривої на вершинах
+	A centerline with this name exists.	Ось траси з такою назвою вже є.
+	enter zero or a positive number	введіть нуль або додатне число

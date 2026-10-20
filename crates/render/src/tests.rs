@@ -944,12 +944,8 @@ fn big_drawings_built_in_parallel_keep_their_images() {
     .unwrap();
     for i in 0..3000 {
         let x = f64::from(i);
-        d.add(
-            &Space::Model,
-            Common::default(),
-            EntityKind::Line(cadcraft_doc::Line { a: Vec3::new(x, 0.0, 0.0), b: Vec3::new(x, 1.0, 0.0) }),
-        )
-        .unwrap();
+        d.add(&Space::Model, Common::default(), EntityKind::Line(cadcraft_doc::Line { a: Vec3::new(x, 0.0, 0.0), b: Vec3::new(x, 1.0, 0.0) }))
+            .unwrap();
     }
     let l = build(&d, &Space::Model, &Options { tolerance: 0.01, ..Default::default() });
     let _ = std::fs::remove_file(&path);

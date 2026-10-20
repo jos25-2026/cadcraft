@@ -729,9 +729,277 @@ pub fn xsection(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
     );
 }
 
+// ---- Horizontal Alignment ----
+
+#[derive(Clone)]
+struct AlignForm {
+    /// The PIs this form belongs to (a new alignment starts a new form).
+    pis: Vec<[f64; 2]>,
+    name: String,
+    radius: String,
+    start: String,
+    ticks: bool,
+    ticks_every: String,
+    text_height: String,
+    labels: bool,
+    /// A radius per interior PI; empty uses the default one.
+    per_pi: Vec<String>,
+}
+
+impl Default for AlignForm {
+    fn default() -> Self {
+        AlignForm {
+            pis: Vec::new(),
+            name: String::new(),
+            radius: "100".into(),
+            start: String::new(),
+            ticks: true,
+            ticks_every: String::new(),
+            text_height: String::new(),
+            labels: true,
+            per_pi: Vec::new(),
+        }
+    }
+}
+
+fn align_params(f: &AlignForm) -> Result<Value, String> {
+    let mut m = Map::new();
+    let radius = match f.radius.trim() {
+        "" => 100.0,
+        t => t
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .ok_or_else(|| format!("{}: {}", crate::i18n::t("Curve radius"), crate::tl!("enter zero or a positive number")))?,
+    };
+    m.insert("radius".into(), json!(radius));
+    let last = f.pis.len().saturating_sub(1);
+    let mut pis = Vec::with_capacity(f.pis.len());
+    for (i, q) in f.pis.iter().enumerate() {
+        let own = if i == 0 || i == last { "" } else { f.per_pi.get(i).map(|t| t.trim()).unwrap_or("") };
+        if own.is_empty() {
+            pis.push(json!([q[0], q[1]]));
+        } else {
+            let r = own
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .ok_or_else(|| format!("PI {i}: {}", crate::tl!("enter zero or a positive number")))?;
+            pis.push(json!([q[0], q[1], r]));
+        }
+    }
+    m.insert("pis".into(), Value::Array(pis));
+    put_text(&mut m, "name", &f.name);
+    put(&mut m, "startStation", &f.start, "Start station", number).map_err(bad_field)?;
+    if f.ticks {
+        match positive(&f.ticks_every).map_err(|()| bad_field("Mark every"))? {
+            Some(v) => m.insert("ticks".into(), json!(v)),
+            None => m.insert("ticks".into(), json!(true)),
+        };
+    }
+    put(&mut m, "textHeight", &f.text_height, "Text height", positive).map_err(bad_field)?;
+    m.insert("labels".into(), json!(f.labels));
+    Ok(Value::Object(m))
+}
+
+/// The picture: a circular curve between two tangents with its elements, and next to it the PIs
+/// the person chose.
+fn align_picture(ui: &mut egui::Ui, pis: &[[f64; 2]]) {
+    use egui::{Align2, Pos2, Stroke};
+    let (resp, p) = ui.allocate_painter(vec2(340.0, 150.0), egui::Sense::hover());
+    let r = resp.rect;
+    let ink = ui.visuals().text_color();
+    let accent = ui.visuals().hyperlink_color;
+    let faint = ui.visuals().weak_text_color();
+    let font = crate::theme::small();
+    // The curve, in the left 200 points.
+    let at = |x: f32, y: f32| Pos2::new(r.left() + x, r.top() + y);
+    let phi = 40f32.to_radians();
+    let t = 70.0f32;
+    let pi = at(105.0, 14.0);
+    let tc = pi + vec2(-phi.sin(), phi.cos()) * t;
+    let ct = pi + vec2(phi.sin(), phi.cos()) * t;
+    let half = 90f32.to_radians() - phi;
+    let rad = t / half.tan();
+    let o = pi + vec2(0.0, t.hypot(rad));
+    let far_l = pi + vec2(-phi.sin(), phi.cos()) * t * 1.55;
+    let far_r = pi + vec2(phi.sin(), phi.cos()) * t * 1.55;
+    let dash = |a: Pos2, b: Pos2, w: f32, c: egui::Color32| {
+        p.extend(egui::Shape::dashed_line(&[a, b], Stroke::new(w, c), 4.0, 3.0));
+    };
+    p.line_segment([far_l, tc], Stroke::new(1.8, accent));
+    p.line_segment([ct, far_r], Stroke::new(1.8, accent));
+    let arc: Vec<Pos2> = (0..=32)
+        .map(|k| {
+            let a = (-90.0 - half.to_degrees() + 2.0 * half.to_degrees() * k as f32 / 32.0).to_radians();
+            o + vec2(a.cos(), a.sin()) * rad
+        })
+        .collect();
+    p.add(egui::Shape::line(arc, Stroke::new(2.2, accent)));
+    dash(tc, pi, 1.0, faint);
+    dash(pi, ct, 1.0, faint);
+    dash(o, tc, 1.0, faint);
+    dash(o, ct, 1.0, faint);
+    dash(pi, o, 1.0, faint);
+    for q in [pi, tc, ct, o] {
+        p.circle_filled(q, 2.6, ink);
+    }
+    let lbl = |q: Pos2, a: Align2, s: &str| {
+        p.text(q, a, s, font.clone(), ink);
+    };
+    lbl(pi + vec2(0.0, -2.0), Align2::CENTER_BOTTOM, "PI");
+    lbl(tc + vec2(-4.0, 2.0), Align2::RIGHT_TOP, "TC");
+    lbl(ct + vec2(4.0, 2.0), Align2::LEFT_TOP, "CT");
+    lbl(o + vec2(5.0, 0.0), Align2::LEFT_CENTER, "O");
+    lbl(tc.lerp(pi, 0.5) + vec2(-4.0, -2.0), Align2::RIGHT_BOTTOM, "T");
+    lbl(ct.lerp(pi, 0.5) + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, "T");
+    lbl(o.lerp(tc, 0.5) + vec2(-3.0, 3.0), Align2::RIGHT_TOP, "R");
+    lbl(pi.lerp(o, 0.5) + vec2(4.0, -8.0), Align2::LEFT_CENTER, "E");
+    lbl(pi + vec2(0.0, 22.0), Align2::CENTER_TOP, "Δ");
+    lbl(at(105.0, 14.0 + t.hypot(rad) - rad - 3.0), Align2::CENTER_BOTTOM, "L");
+    // The PIs chosen.
+    let box_ = egui::Rect::from_min_max(at(212.0, 4.0), at(336.0, 146.0));
+    p.rect_stroke(box_, 3.0, Stroke::new(1.0, faint), egui::StrokeKind::Inside);
+    if pis.len() >= 2 {
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for q in pis {
+            for k in 0..2 {
+                lo[k] = lo[k].min(q[k]);
+                hi[k] = hi[k].max(q[k]);
+            }
+        }
+        let inner = box_.shrink(10.0);
+        let span = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-9);
+        let scale = (f64::from(inner.width().min(inner.height())) / span) as f32;
+        let to = |q: &[f64; 2]| {
+            Pos2::new(
+                inner.center().x + ((q[0] - (lo[0] + hi[0]) / 2.0) as f32) * scale,
+                inner.center().y - ((q[1] - (lo[1] + hi[1]) / 2.0) as f32) * scale,
+            )
+        };
+        let line: Vec<Pos2> = pis.iter().take(2000).map(to).collect();
+        p.add(egui::Shape::line(line.clone(), Stroke::new(1.4, accent)));
+        for (i, q) in line.iter().enumerate() {
+            p.circle_filled(*q, 2.4, ink);
+            if pis.len() <= 12 {
+                p.text(*q + vec2(3.0, -3.0), Align2::LEFT_BOTTOM, i.to_string(), font.clone(), faint);
+            }
+        }
+    }
+}
+
+pub fn roadalign(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+    let pis = app.align_pis.clone();
+    let names_used = centerline_names(app);
+    shell::<AlignForm>(
+        app,
+        ctx,
+        open,
+        "roadalign_dialog",
+        crate::tl!("Horizontal Alignment"),
+        |ui, f| {
+            if f.pis != pis {
+                *f = AlignForm { pis: pis.clone(), per_pi: vec![String::new(); pis.len()], ..AlignForm::default() };
+            }
+            ui.label("");
+            align_picture(ui, &pis);
+            ui.end_row();
+            ui.label(crate::tl!("Alignment name"));
+            ui.add(egui::TextEdit::singleline(&mut f.name).hint_text(crate::tl!("Automatic")).desired_width(140.0));
+            ui.end_row();
+            if !f.name.trim().is_empty() && names_used.iter().any(|n| n.eq_ignore_ascii_case(f.name.trim())) {
+                ui.label("");
+                ui.colored_label(egui::Color32::LIGHT_RED, crate::tl!("A centerline with this name exists."));
+                ui.end_row();
+            }
+            ui.label(crate::tl!("Curve radius"));
+            ui.add(egui::TextEdit::singleline(&mut f.radius).hint_text("100").desired_width(140.0));
+            ui.end_row();
+            if pis.len() > 2 {
+                ui.label(crate::tl!("Radius per PI"));
+                ui.collapsing(crate::tl!("Different radius at a PI"), |ui| {
+                    egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                        egui::Grid::new("roadalign_per_pi").num_columns(2).show(ui, |ui| {
+                            for i in 1..pis.len() - 1 {
+                                ui.label(format!("PI {i}"));
+                                if let Some(t) = f.per_pi.get_mut(i) {
+                                    ui.add(egui::TextEdit::singleline(t).hint_text(f.radius.trim()).desired_width(100.0));
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });
+                });
+                ui.end_row();
+            }
+            ui.label(crate::tl!("Start station"));
+            ui.add(egui::TextEdit::singleline(&mut f.start).hint_text("0").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Station marks"));
+            ui.checkbox(&mut f.ticks, "");
+            ui.end_row();
+            ui.label(crate::tl!("Mark every"));
+            ui.add_enabled_ui(f.ticks, |ui| edit(ui, &mut f.ticks_every, true));
+            ui.end_row();
+            ui.label(crate::tl!("Text height"));
+            edit(ui, &mut f.text_height, true);
+            ui.end_row();
+            ui.label(crate::tl!("Curve data at the PIs"));
+            ui.checkbox(&mut f.labels, "");
+            ui.end_row();
+        },
+        |_, _| {},
+        |app, f| {
+            let p = align_params(f)?;
+            app.run("roadalign", p)?;
+            let _ = app.session.execute("zoom.extents", &Value::Null);
+            Ok(())
+        },
+    );
+}
+
+/// Every frame: once ROADALIGN has chosen its PIs, open the settings dialog.
+pub fn align_resume(app: &mut CadApp) {
+    if app.session.running.is_some() {
+        return;
+    }
+    if let Some(v) = app.session.align_pending.take() {
+        app.align_pis = v.iter().map(|q| [q.x, q.y]).collect();
+        app.ui.dialog = Some("roadalign".into());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_alignment_picture_draws_with_any_pis() {
+        let ctx = egui::Context::default();
+        for pis in [vec![], vec![[0.0, 0.0]], vec![[0.0, 0.0], [0.0, 0.0]], vec![[0.0, 0.0], [1e9, -1e9], [5.0, 5.0]]] {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| align_picture(ui, &pis));
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_alignment_form_gives_the_pis_with_their_radii() {
+        let f = AlignForm {
+            pis: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]],
+            per_pi: vec![String::new(), "60".into(), String::new()],
+            name: "Road 1".into(),
+            ..AlignForm::default()
+        };
+        let p = align_params(&f).unwrap_or_default();
+        assert_eq!(p["pis"], json!([[0.0, 0.0], [100.0, 0.0, 60.0], [100.0, 100.0]]));
+        assert_eq!(p["radius"], json!(100.0));
+        assert_eq!(p["name"], json!("Road 1"));
+        assert_eq!(p["ticks"], json!(true));
+        let bad = AlignForm { radius: "-5".into(), ..f.clone() };
+        assert!(align_params(&bad).is_err());
+        let bad = AlignForm { per_pi: vec![String::new(), "abc".into(), String::new()], ..f };
+        assert!(align_params(&bad).is_err());
+    }
 
     #[test]
     fn empty_fields_are_automatic_and_bad_ones_are_named() {
