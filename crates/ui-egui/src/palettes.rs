@@ -51,6 +51,8 @@ pub const DRAFTING: &[(&str, &[Tool], &[Tool])] = &[
             (Icon::NorthArrow, "northarrow", "North Arrow"),
             (Icon::Centerline, "alignment", "Centerline"),
             (Icon::RoadAlign, "roadalign", "Horizontal Alignment"),
+            (Icon::RoadProfile, "roadprofile", "Profile and Vertical Curves"),
+            (Icon::RoadSection, "roadsection", "Road Cross Sections"),
             (Icon::CrossSection, "xsection", "Cross Sections"),
             (Icon::Tree, "trees", "Plant Trees"),
         ],

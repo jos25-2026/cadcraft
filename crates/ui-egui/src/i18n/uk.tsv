@@ -1421,3 +1421,25 @@
 	Curve data at the PIs	Дані кривої на вершинах
 	A centerline with this name exists.	Ось траси з такою назвою вже є.
 	enter zero or a positive number	введіть нуль або додатне число
+	Station	Пікет
+	Curve length	Довжина кривої
+	Add PVI	Додати ВК
+	Remove last	Видалити останню
+	PVIs	Вершини кута (ВК)
+	Station line every	Лінія пікета кожні
+	Lane width	Ширина смуги
+	Lanes each side	Смуг з кожного боку
+	Shoulder width	Ширина узбіччя
+	Lane crossfall (%)	Поперечний ухил смуги (%)
+	Shoulder crossfall (%)	Поперечний ухил узбіччя (%)
+	Cut slope (horizontal per 1 vertical)	Укіс виїмки (по горизонталі на 1 по вертикалі)
+	Fill slope (horizontal per 1 vertical)	Укіс насипу (по горизонталі на 1 по вертикалі)
+	Farthest slope run	Найбільший виніс укосу
+	Road Cross Sections	Поперечні профілі дороги
+	Road Cross Sections...	Поперечні профілі дороги...
+	Profile and Vertical Curves	Профіль і вертикальні криві
+	Profile and Vertical Curves...	Профіль і вертикальні криві...
+	No design grade: run Profile first.	Немає проєктної лінії: спершу виконайте профіль.
+	station and elevation are numbers	пікет і відмітка — числа
+	the curve length is zero or more	довжина кривої — нуль або більше
+	Give at least two PVIs (station and elevation).	Вкажіть щонайменше дві вершини (пікет і відмітка).

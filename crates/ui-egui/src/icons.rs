@@ -60,6 +60,8 @@ pub enum Icon {
     CrossSection,
     Centerline,
     RoadAlign,
+    RoadProfile,
+    RoadSection,
     Table,
     Text,
     MText,
@@ -480,6 +482,17 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool) {
             pen.l(19.0, 11.0, 19.0, 3.0);
             pen.fill_c(3.0, 19.0, 1.4, b);
             pen.fill_c(19.0, 3.0, 1.4, b);
+        }
+        RoadProfile => {
+            pen.poly(&[(3.0, 15.0), (7.0, 17.0), (11.0, 13.0), (15.0, 16.0), (21.0, 12.0)], false, b);
+            pen.poly(&[(3.0, 18.0), (8.0, 11.0), (12.0, 7.5), (16.0, 8.5), (21.0, 5.0)], false, a);
+            pen.fill_c(12.0, 7.5, 1.4, a);
+            pen.l(3.0, 21.0, 21.0, 21.0);
+        }
+        RoadSection => {
+            pen.poly(&[(2.0, 14.0), (8.0, 14.0), (10.0, 10.0), (14.0, 10.0), (16.0, 14.0), (22.0, 14.0)], false, a);
+            pen.poly(&[(2.0, 17.0), (7.0, 12.5), (12.0, 18.0), (17.0, 13.0), (22.0, 16.0)], false, b);
+            pen.l(12.0, 4.0, 12.0, 10.0);
         }
         Centerline => {
             pen.poly(&[(3.0, 18.0), (9.0, 8.0), (15.0, 15.0), (21.0, 5.0)], false, a);

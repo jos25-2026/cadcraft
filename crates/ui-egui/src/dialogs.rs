@@ -30,6 +30,8 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context) {
         "trees" => crate::surveydlg::trees(app, ctx, &mut open),
         "xsection" => crate::surveydlg::xsection(app, ctx, &mut open),
         "roadalign" => crate::surveydlg::roadalign(app, ctx, &mut open),
+        "roadprofile" => crate::surveydlg::roadprofile(app, ctx, &mut open),
+        "roadsection" => crate::surveydlg::roadsection(app, ctx, &mut open),
         "about" => about(ctx, &mut open),
         "preview" => crate::exchange::dialog(app, ctx, &mut open),
         "commands" => commands(app, ctx, &mut open),

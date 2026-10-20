@@ -969,9 +969,456 @@ pub fn align_resume(app: &mut CadApp) {
     }
 }
 
+// ---- Profile and Vertical Curves ----
+
+#[derive(Clone)]
+struct ProfileForm {
+    name: String,
+    /// Station, elevation and curve length of each PVI.
+    pvis: Vec<[String; 3]>,
+    start: String,
+    vscale: String,
+    station_every: String,
+    grid_every: String,
+    text_height: String,
+}
+
+impl Default for ProfileForm {
+    fn default() -> Self {
+        ProfileForm {
+            name: String::new(),
+            pvis: vec![Default::default(), Default::default()],
+            start: String::new(),
+            vscale: "10".into(),
+            station_every: String::new(),
+            grid_every: String::new(),
+            text_height: String::new(),
+        }
+    }
+}
+
+/// The PVIs kept in the drawing for a centerline (text `PVI sta,elev,len` on the layer `PVI-<name>`).
+fn kept_pvis(app: &CadApp, name: &str) -> Vec<[String; 3]> {
+    let Ok(d) = app.session.doc() else { return Vec::new() };
+    let layer = format!("PVI-{name}");
+    let mut v: Vec<(f64, [String; 3])> = d
+        .model
+        .iter()
+        .filter(|e| e.common.layer.eq_ignore_ascii_case(&layer))
+        .filter_map(|e| match &e.kind {
+            cadcraft_doc::EntityKind::Text(t) => {
+                let body = t.value.trim().strip_prefix("PVI")?.trim();
+                let f: Vec<&str> = body.split(',').map(str::trim).collect();
+                let sta = f.first()?.parse::<f64>().ok()?;
+                let z = f.get(1)?.parse::<f64>().ok()?;
+                let len = f.get(2).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                let fmt = |x: f64| format!("{x}");
+                Some((sta, [fmt(sta), fmt(z), fmt(len)]))
+            }
+            _ => None,
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    v.into_iter().map(|x| x.1).collect()
+}
+
+fn pvi_rows(rows: &[[String; 3]]) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        if r.iter().all(|c| c.trim().is_empty()) {
+            continue;
+        }
+        let n = |t: &str| t.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let (Some(sta), Some(z)) = (n(&r[0]), n(&r[1])) else {
+            return Err(format!("PVI {}: {}", i + 1, crate::tl!("station and elevation are numbers")));
+        };
+        let len = if r[2].trim().is_empty() {
+            0.0
+        } else {
+            n(&r[2]).filter(|v| *v >= 0.0).ok_or_else(|| format!("PVI {}: {}", i + 1, crate::tl!("the curve length is zero or more")))?
+        };
+        out.push(json!([sta, z, len]));
+    }
+    if out.len() < 2 {
+        return Err(crate::tl!("Give at least two PVIs (station and elevation).").to_string());
+    }
+    Ok(out)
+}
+
+fn profile_params(f: &ProfileForm) -> Result<Value, String> {
+    if f.name.is_empty() {
+        return Err(crate::tl!("Choose a centerline, or draw one first.").to_string());
+    }
+    let mut m = Map::new();
+    m.insert("name".into(), json!(f.name));
+    m.insert("pvis".into(), Value::Array(pvi_rows(&f.pvis)?));
+    put(&mut m, "startStation", &f.start, "Start station", number).map_err(bad_field)?;
+    put(&mut m, "vScale", &f.vscale, "Vertical exaggeration", positive).map_err(bad_field)?;
+    put(&mut m, "stationEvery", &f.station_every, "Station line every", positive).map_err(bad_field)?;
+    put(&mut m, "gridEvery", &f.grid_every, "Horizontal line every", positive).map_err(bad_field)?;
+    put(&mut m, "textHeight", &f.text_height, "Text height", positive).map_err(bad_field)?;
+    Ok(Value::Object(m))
+}
+
+/// A crest vertical curve with its elements.
+fn vcurve_picture(ui: &mut egui::Ui) {
+    use egui::{Align2, Pos2, Stroke};
+    let (resp, p) = ui.allocate_painter(vec2(340.0, 130.0), egui::Sense::hover());
+    let r = resp.rect;
+    let ink = ui.visuals().text_color();
+    let accent = ui.visuals().hyperlink_color;
+    let faint = ui.visuals().weak_text_color();
+    let font = crate::theme::small();
+    let at = |x: f32, y: f32| Pos2::new(r.left() + x, r.top() + y);
+    let (pvc, pvi, pvt) = (at(90.0, 80.0), at(170.0, 40.0), at(250.0, 80.0));
+    // Tangents and the parabola between PVC and PVT.
+    p.line_segment([at(20.0, 108.0), pvi], Stroke::new(1.0, faint));
+    p.line_segment([pvi, at(320.0, 108.0)], Stroke::new(1.0, faint));
+    let curve: Vec<Pos2> = (0..=24)
+        .map(|k| {
+            let t = k as f32 / 24.0;
+            let x = 90.0 + 160.0 * t;
+            // the parabola below the tangents: quadratic Bezier through the PVI
+            let y = (1.0 - t) * (1.0 - t) * 80.0 + 2.0 * t * (1.0 - t) * 40.0 + t * t * 80.0;
+            at(x, y)
+        })
+        .collect();
+    p.add(egui::Shape::line([at(20.0, 108.0), pvc].to_vec().into_iter().chain(curve).chain([at(320.0, 108.0)]).collect(), Stroke::new(2.2, accent)));
+    p.line_segment([pvc, at(90.0, 118.0)], Stroke::new(1.0, faint));
+    p.line_segment([pvt, at(250.0, 118.0)], Stroke::new(1.0, faint));
+    p.line_segment([at(90.0, 114.0), at(250.0, 114.0)], Stroke::new(1.0, faint));
+    for q in [pvc, pvi, pvt] {
+        p.circle_filled(q, 2.6, ink);
+    }
+    let lbl = |q: Pos2, a: Align2, s: &str| {
+        p.text(q, a, s, font.clone(), ink);
+    };
+    lbl(pvi + vec2(0.0, -4.0), Align2::CENTER_BOTTOM, "PVI");
+    lbl(pvc + vec2(-4.0, -2.0), Align2::RIGHT_BOTTOM, "PVC");
+    lbl(pvt + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, "PVT");
+    lbl(at(170.0, 112.0), Align2::CENTER_BOTTOM, "L");
+    lbl(at(40.0, 84.0), Align2::CENTER_BOTTOM, "g1");
+    lbl(at(300.0, 84.0), Align2::CENTER_BOTTOM, "g2");
+    lbl(at(176.0, 56.0), Align2::LEFT_CENTER, "A = g2 - g1,  K = L / A");
+}
+
+pub fn roadprofile(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+    let names = centerline_names(app);
+    let loaded_id = egui::Id::new("roadprofile_loaded");
+    let kept: Vec<(String, Vec<[String; 3]>)> = names.iter().map(|n| (n.clone(), kept_pvis(app, n))).collect();
+    shell::<ProfileForm>(
+        app,
+        ctx,
+        open,
+        "roadprofile_dialog",
+        crate::tl!("Profile and Vertical Curves"),
+        |ui, f| {
+            if !names.contains(&f.name) {
+                f.name = names.first().cloned().unwrap_or_default();
+            }
+            ui.label("");
+            vcurve_picture(ui);
+            ui.end_row();
+            ui.label(crate::tl!("Centerline"));
+            let before = f.name.clone();
+            egui::ComboBox::from_id_salt("roadprofile_centerline")
+                .selected_text(if f.name.is_empty() { crate::tl!("(none)").to_string() } else { f.name.clone() })
+                .show_ui(ui, |ui| {
+                    for n in &names {
+                        ui.selectable_value(&mut f.name, n.clone(), n);
+                    }
+                });
+            // The kept design grade of a centerline fills the table when it is chosen.
+            let last = ui.data_mut(|d| d.get_temp::<String>(loaded_id)).unwrap_or_default();
+            if f.name != last || before != f.name {
+                if let Some((_, rows)) = kept.iter().find(|(n, _)| *n == f.name)
+                    && !rows.is_empty()
+                {
+                    f.pvis = rows.clone();
+                }
+                ui.data_mut(|d| d.insert_temp(loaded_id, f.name.clone()));
+            }
+            ui.end_row();
+            ui.label(crate::tl!("PVIs"));
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                    egui::Grid::new("roadprofile_pvis").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
+                        ui.label("");
+                        ui.label(crate::tl!("Station"));
+                        ui.label(crate::tl!("Elevation"));
+                        ui.label(crate::tl!("Curve length"));
+                        ui.end_row();
+                        for (i, row) in f.pvis.iter_mut().enumerate() {
+                            ui.label(format!("{}", i + 1));
+                            for c in row.iter_mut() {
+                                ui.add(egui::TextEdit::singleline(c).desired_width(80.0));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(crate::tl!("Add PVI")).clicked() && f.pvis.len() < 1000 {
+                        f.pvis.push(Default::default());
+                    }
+                    if ui.button(crate::tl!("Remove last")).clicked() && f.pvis.len() > 2 {
+                        f.pvis.pop();
+                    }
+                });
+            });
+            ui.end_row();
+            ui.label(crate::tl!("Start station"));
+            ui.add(egui::TextEdit::singleline(&mut f.start).hint_text("0").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Vertical exaggeration"));
+            ui.add(egui::TextEdit::singleline(&mut f.vscale).hint_text("10").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Station line every"));
+            edit(ui, &mut f.station_every, true);
+            ui.end_row();
+            ui.label(crate::tl!("Horizontal line every"));
+            edit(ui, &mut f.grid_every, true);
+            ui.end_row();
+            ui.label(crate::tl!("Text height"));
+            edit(ui, &mut f.text_height, true);
+            ui.end_row();
+        },
+        |_, _| {},
+        |app, f| {
+            let p = profile_params(f)?;
+            app.run("roadprofile", p)?;
+            let _ = app.session.execute("zoom.extents", &Value::Null);
+            Ok(())
+        },
+    );
+}
+
+// ---- Road Cross Sections ----
+
+#[derive(Clone)]
+struct RoadSecForm {
+    name: String,
+    start: String,
+    interval: String,
+    lanes: u32,
+    lane_width: String,
+    shoulder: String,
+    crossfall: String,
+    shoulder_fall: String,
+    cut_slope: String,
+    fill_slope: String,
+    reach: String,
+    vscale: String,
+    columns: u32,
+}
+
+impl Default for RoadSecForm {
+    fn default() -> Self {
+        RoadSecForm {
+            name: String::new(),
+            start: String::new(),
+            interval: "20".into(),
+            lanes: 1,
+            lane_width: "3.5".into(),
+            shoulder: "1.5".into(),
+            crossfall: "2".into(),
+            shoulder_fall: "4".into(),
+            cut_slope: "1.5".into(),
+            fill_slope: "2".into(),
+            reach: "60".into(),
+            vscale: String::new(),
+            columns: 3,
+        }
+    }
+}
+
+fn roadsec_params(f: &RoadSecForm) -> Result<Value, String> {
+    if f.name.is_empty() {
+        return Err(crate::tl!("Choose a centerline, or draw one first.").to_string());
+    }
+    let mut m = Map::new();
+    m.insert("name".into(), json!(f.name));
+    m.insert("lanes".into(), json!(f.lanes));
+    m.insert("columns".into(), json!(f.columns));
+    put(&mut m, "startStation", &f.start, "Start station", number).map_err(bad_field)?;
+    for (key, text, field) in [
+        ("interval", &f.interval, "Section interval"),
+        ("laneWidth", &f.lane_width, "Lane width"),
+        ("cutSlope", &f.cut_slope, "Cut slope (horizontal per 1 vertical)"),
+        ("fillSlope", &f.fill_slope, "Fill slope (horizontal per 1 vertical)"),
+        ("reach", &f.reach, "Farthest slope run"),
+        ("vScale", &f.vscale, "Vertical exaggeration"),
+    ] {
+        put(&mut m, key, text, field, positive).map_err(bad_field)?;
+    }
+    for (key, text, field) in [
+        ("shoulder", &f.shoulder, "Shoulder width"),
+        ("crossfall", &f.crossfall, "Lane crossfall (%)"),
+        ("shoulderFall", &f.shoulder_fall, "Shoulder crossfall (%)"),
+    ] {
+        // Zero is allowed: no shoulder or a flat road.
+        put(&mut m, key, text, field, |t| {
+            let t = t.trim();
+            if t.is_empty() {
+                return Ok(None);
+            }
+            t.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(Some).ok_or(())
+        })
+        .map_err(bad_field)?;
+    }
+    Ok(Value::Object(m))
+}
+
+/// The road template: crown, lanes, shoulders, a cut slope on one side and a fill on the other.
+fn road_picture(ui: &mut egui::Ui) {
+    use egui::{Align2, Pos2, Stroke};
+    let (resp, p) = ui.allocate_painter(vec2(340.0, 140.0), egui::Sense::hover());
+    let r = resp.rect;
+    let ink = ui.visuals().text_color();
+    let accent = ui.visuals().hyperlink_color;
+    let faint = ui.visuals().weak_text_color();
+    let font = crate::theme::small();
+    let at = |x: f32, y: f32| Pos2::new(r.left() + x, r.top() + y);
+    // Ground: higher on the left (cut), lower on the right (fill).
+    let ground = [at(4.0, 36.0), at(60.0, 52.0), at(150.0, 72.0), at(230.0, 84.0), at(336.0, 104.0)];
+    p.add(egui::Shape::line(ground.to_vec(), Stroke::new(1.6, faint)));
+    // Design: cut slope up-left, shoulder, lane, crown, lane, shoulder, fill slope down-right.
+    let design = [
+        at(52.0, 40.0),
+        at(86.0, 64.0),
+        at(100.0, 64.5),
+        at(130.0, 66.0),
+        at(170.0, 62.0),
+        at(210.0, 66.0),
+        at(240.0, 67.0),
+        at(250.0, 66.0),
+        at(318.0, 108.0),
+    ];
+    // keep the design above/below ground where it should be: it is a picture only
+    p.add(egui::Shape::line(design.to_vec(), Stroke::new(2.2, accent)));
+    p.line_segment([at(170.0, 62.0), at(170.0, 16.0)], Stroke::new(1.0, faint));
+    for q in [design[1], design[2], design[4], design[6], design[7]] {
+        p.circle_filled(q, 2.4, ink);
+    }
+    let lbl = |q: Pos2, a: Align2, s: &str| {
+        p.text(q, a, s, font.clone(), ink);
+    };
+    lbl(at(170.0, 14.0), Align2::CENTER_BOTTOM, "CL");
+    lbl(at(66.0, 30.0), Align2::CENTER_BOTTOM, "cut 1 : n");
+    lbl(at(290.0, 82.0), Align2::CENTER_BOTTOM, "fill 1 : n");
+    lbl(at(115.0, 84.0), Align2::CENTER_TOP, "shoulder");
+    lbl(at(150.0, 50.0), Align2::CENTER_BOTTOM, "lane  x %");
+    lbl(at(52.0, 44.0), Align2::CENTER_TOP, "daylight");
+    lbl(at(318.0, 112.0), Align2::CENTER_TOP, "daylight");
+    p.line_segment([at(100.0, 124.0), at(240.0, 124.0)], Stroke::new(1.0, faint));
+    lbl(at(170.0, 126.0), Align2::CENTER_TOP, "road width");
+}
+
+pub fn roadsection(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
+    let names = centerline_names(app);
+    let with_grade: Vec<String> = names.iter().filter(|n| kept_pvis(app, n).len() >= 2).cloned().collect();
+    shell::<RoadSecForm>(
+        app,
+        ctx,
+        open,
+        "roadsection_dialog",
+        crate::tl!("Road Cross Sections"),
+        |ui, f| {
+            if !names.contains(&f.name) {
+                f.name = with_grade.first().or(names.first()).cloned().unwrap_or_default();
+            }
+            ui.label("");
+            road_picture(ui);
+            ui.end_row();
+            ui.label(crate::tl!("Centerline"));
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("roadsection_centerline")
+                    .selected_text(if f.name.is_empty() { crate::tl!("(none)").to_string() } else { f.name.clone() })
+                    .show_ui(ui, |ui| {
+                        for n in &names {
+                            ui.selectable_value(&mut f.name, n.clone(), n);
+                        }
+                    });
+                if !f.name.is_empty() && !with_grade.contains(&f.name) {
+                    ui.colored_label(egui::Color32::LIGHT_RED, crate::tl!("No design grade: run Profile first."));
+                }
+            });
+            ui.end_row();
+            ui.label(crate::tl!("Section interval"));
+            ui.add(egui::TextEdit::singleline(&mut f.interval).hint_text("20").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Start station"));
+            ui.add(egui::TextEdit::singleline(&mut f.start).hint_text("0").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Lanes each side"));
+            ui.add(egui::DragValue::new(&mut f.lanes).range(1..=12));
+            ui.end_row();
+            for (label, text, hint) in [
+                ("Lane width", &mut f.lane_width, "3.5"),
+                ("Shoulder width", &mut f.shoulder, "1.5"),
+                ("Lane crossfall (%)", &mut f.crossfall, "2"),
+                ("Shoulder crossfall (%)", &mut f.shoulder_fall, "4"),
+                ("Cut slope (horizontal per 1 vertical)", &mut f.cut_slope, "1.5"),
+                ("Fill slope (horizontal per 1 vertical)", &mut f.fill_slope, "2"),
+                ("Farthest slope run", &mut f.reach, "60"),
+            ] {
+                ui.label(crate::i18n::t(label));
+                ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(140.0));
+                ui.end_row();
+            }
+            ui.label(crate::tl!("Vertical exaggeration"));
+            ui.add(egui::TextEdit::singleline(&mut f.vscale).hint_text("1").desired_width(140.0));
+            ui.end_row();
+            ui.label(crate::tl!("Sections per row"));
+            ui.add(egui::DragValue::new(&mut f.columns).range(1..=50));
+            ui.end_row();
+        },
+        |_, _| {},
+        |app, f| {
+            let p = roadsec_params(f)?;
+            app.run("roadsection", p)?;
+            let _ = app.session.execute("zoom.extents", &Value::Null);
+            Ok(())
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_profile_and_road_forms_give_their_parameters() {
+        let rows = vec![["0".to_string(), "5".into(), String::new()], ["100".into(), "8".into(), "40".into()], Default::default()];
+        let f = ProfileForm { name: "L".into(), pvis: rows, ..ProfileForm::default() };
+        let p = profile_params(&f).unwrap_or_default();
+        assert_eq!(p["pvis"], json!([[0.0, 5.0, 0.0], [100.0, 8.0, 40.0]]));
+        assert_eq!(p["vScale"], json!(10.0));
+        assert!(profile_params(&ProfileForm::default()).is_err(), "no centerline");
+        let one = ProfileForm { name: "L".into(), pvis: vec![["0".into(), "5".into(), String::new()]], ..ProfileForm::default() };
+        assert!(profile_params(&one).is_err(), "two PVIs at least");
+        let bad = ProfileForm {
+            name: "L".into(),
+            pvis: vec![["0".into(), "x".into(), String::new()], ["5".into(), "5".into(), String::new()]],
+            ..ProfileForm::default()
+        };
+        assert!(profile_params(&bad).is_err());
+        let r = roadsec_params(&RoadSecForm { name: "L".into(), shoulder: "0".into(), ..RoadSecForm::default() }).unwrap_or_default();
+        assert_eq!(r["shoulder"], json!(0.0));
+        assert_eq!(r["cutSlope"], json!(1.5));
+        assert!(roadsec_params(&RoadSecForm { name: "L".into(), cut_slope: "0".into(), ..RoadSecForm::default() }).is_err());
+        assert!(roadsec_params(&RoadSecForm { name: "L".into(), crossfall: "-1".into(), ..RoadSecForm::default() }).is_err());
+    }
+
+    #[test]
+    fn the_road_pictures_draw() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            vcurve_picture(ui);
+            road_picture(ui);
+        });
+        out.textures_delta.clear();
+    }
 
     #[test]
     fn the_alignment_picture_draws_with_any_pis() {

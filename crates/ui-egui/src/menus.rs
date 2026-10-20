@@ -432,6 +432,14 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             }
             Ok(Value::Null)
         }
+        "roadprofile" | "profile" | "verticalcurves" | "vcurve" | "gradeline" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("roadprofile".into());
+            Ok(Value::Null)
+        }
+        "roadsection" | "roadxs" | "cutfillsections" | "roadsections" if params.is_null() && app.session.state().is_ok() => {
+            app.ui.dialog = Some("roadsection".into());
+            Ok(Value::Null)
+        }
         "trees" | "planttrees" | "treesymbols" if params.is_null() && app.session.state().is_ok() => {
             app.ui.dialog = Some("trees".into());
             Ok(Value::Null)
