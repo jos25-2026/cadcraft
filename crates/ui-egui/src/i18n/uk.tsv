@@ -1490,5 +1490,3 @@
 	Area (easting and northing)	Ділянка (схід і північ)
 	Area (longitude and latitude)	Ділянка (довгота й широта)
 	Aerial Image from the Web	Аерофотознімок з інтернету
-	four angles: west, south, east, north (degrees, or degrees minutes seconds)	чотири кути: захід, південь, схід, північ (градуси або градуси, мінути, секунди)
-	four numbers in metres: min easting, min northing, max easting, max northing	чотири числа в метрах: мін. схід, мін. північ, макс. схід, макс. північ
