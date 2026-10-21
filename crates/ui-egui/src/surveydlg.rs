@@ -1522,15 +1522,50 @@ impl Default for AerialForm {
     }
 }
 
-fn four(label: &str, t: &[String; 4], lo: f64, hi: f64) -> Result<[f64; 4], String> {
+/// An angle as decimal degrees or as degrees, minutes and seconds: `98.9548`, `98°57'17.3"`,
+/// `98 57 17.3`, `-98 57 17.3`, `98°57'17.3"E` (S and W are negative).
+fn parse_angle(text: &str) -> Option<f64> {
+    let mut t = text.trim().to_ascii_uppercase();
+    let mut sign = 1.0;
+    if let Some(last) = t.chars().last()
+        && matches!(last, 'N' | 'S' | 'E' | 'W')
+    {
+        if matches!(last, 'S' | 'W') {
+            sign = -1.0;
+        }
+        t.pop();
+    }
+    let t: String = t.chars().map(|c| if matches!(c, '°' | '\'' | '"' | '′' | '″' | '’' | '”' | ',') { ' ' } else { c }).collect();
+    let parts: Vec<f64> = t.split_whitespace().map(|p| p.parse::<f64>().ok().filter(|v| v.is_finite())).collect::<Option<_>>()?;
+    let (d, m, s) = match parts[..] {
+        [d] => (d, 0.0, 0.0),
+        [d, m] => (d, m, 0.0),
+        [d, m, s] => (d, m, s),
+        _ => return None,
+    };
+    if parts.len() > 1 && (!(0.0..60.0).contains(&m) || !(0.0..60.0).contains(&s) || d.fract() != 0.0) {
+        return None;
+    }
+    let neg = t.trim_start().starts_with('-');
+    let v = d.abs() + m / 60.0 + s / 3600.0;
+    Some(sign * if neg { -v } else { v })
+}
+
+fn four(label: &str, t: &[String; 4], lo: f64, hi: f64, angles: bool) -> Result<[f64; 4], String> {
     let mut out = [0.0; 4];
     for (slot, s) in out.iter_mut().zip(t) {
-        *slot = s
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite() && (lo..=hi).contains(v))
-            .ok_or_else(|| format!("{}: {}", crate::i18n::t(label), crate::tl!("four numbers: min x, min y, max x, max y")))?;
+        let v = if angles { parse_angle(s) } else { s.trim().parse::<f64>().ok() };
+        *slot = v.filter(|v| v.is_finite() && (lo..=hi).contains(v)).ok_or_else(|| {
+            format!(
+                "{}: {}",
+                crate::i18n::t(label),
+                if angles {
+                    crate::tl!("four angles: west, south, east, north (degrees, or degrees minutes seconds)")
+                } else {
+                    crate::tl!("four numbers in metres: min easting, min northing, max easting, max northing")
+                }
+            )
+        })?;
     }
     if out[0] >= out[2] || out[1] >= out[3] {
         return Err(format!("{}: {}", crate::i18n::t(label), crate::tl!("the minimum is below the maximum")));
@@ -1546,10 +1581,10 @@ fn aerial_params(f: &AerialForm) -> Result<Value, String> {
     m.insert("crs".into(), json!(crs));
     match f.area {
         1 => {
-            m.insert("extent".into(), json!(four("Area (easting and northing)", &f.ext, -1.0e9, 1.0e9)?));
+            m.insert("extent".into(), json!(four("Area (easting and northing)", &f.ext, -1.0e9, 1.0e9, false)?));
         }
         2 => {
-            let b = four("Area (longitude and latitude)", &f.ll, -180.0, 180.0)?;
+            let b = four("Area (longitude and latitude)", &f.ll, -180.0, 180.0, true)?;
             m.insert("lonLat".into(), json!(b));
         }
         _ => {}
@@ -1631,12 +1666,12 @@ pub fn aerial(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
                     egui::Grid::new("aerial_ll").num_columns(2).show(ui, |ui| {
                         for (label, k) in [("West (longitude)", 0), ("South (latitude)", 1), ("East (longitude)", 2), ("North (latitude)", 3)] {
                             ui.label(crate::i18n::t(label));
-                            ui.add(egui::TextEdit::singleline(&mut f.ll[k]).hint_text("0.000000").desired_width(130.0));
+                            ui.add(egui::TextEdit::singleline(&mut f.ll[k]).hint_text("98.9548 or 98°57'17\"").desired_width(150.0));
                             ui.end_row();
                         }
                     });
                     if ui.button(crate::tl!("Zone of this box")).clicked()
-                        && let [Ok(w), Ok(s), Ok(e), Ok(n)] = [0, 1, 2, 3].map(|k| f.ll[k].trim().parse::<f64>())
+                        && let [Some(w), Some(s), Some(e), Some(n)] = [0, 1, 2, 3].map(|k| parse_angle(&f.ll[k]))
                         && let Some(cadcraft_geom::Crs::Utm { zone, north }) = cadcraft_geom::Crs::utm_for((w + e) / 2.0, (s + n) / 2.0)
                     {
                         f.system = 0;
@@ -1715,6 +1750,29 @@ mod tests {
         assert!(roadsec_params(&both).is_err(), "rows and a design speed together");
         let steep = RoadSecForm { name: "L".into(), banking: vec![["20".into(), "40".into(), "-2".into()]], ..RoadSecForm::default() };
         assert!(roadsec_params(&steep).is_err());
+    }
+
+    #[test]
+    fn angles_read_as_decimal_or_degrees_minutes_seconds() {
+        let near = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-9);
+        assert!(near(parse_angle("98.9548"), 98.9548));
+        assert!(near(parse_angle("98°57'17.3\""), 98.0 + 57.0 / 60.0 + 17.3 / 3600.0));
+        assert!(near(parse_angle("98 57 17.3"), 98.0 + 57.0 / 60.0 + 17.3 / 3600.0));
+        assert!(near(parse_angle("18°48'40.4\"N"), 18.0 + 48.0 / 60.0 + 40.4 / 3600.0));
+        assert!(near(parse_angle("73°59'8\"W"), -(73.0 + 59.0 / 60.0 + 8.0 / 3600.0)));
+        assert!(near(parse_angle("-33 51 0"), -(33.0 + 51.0 / 60.0)));
+        for bad in ["", "abc", "98°61'0\"", "98 57 61", "1 2 3 4", "98.5 30", "nan", "inf"] {
+            assert_eq!(parse_angle(bad), None, "{bad}");
+        }
+        let f = AerialForm {
+            area: 2,
+            ll: ["98°57'17.3\"".into(), "18°48'40.4\"".into(), "98°57'21.2\"".into(), "18°48'44.1\"".into()],
+            ..AerialForm::default()
+        };
+        let p = aerial_params(&f).unwrap_or_default();
+        assert!((p["lonLat"][0].as_f64().unwrap_or(0.0) - 98.954_805_6).abs() < 1e-6);
+        // Degrees in the metre boxes are refused.
+        assert!(aerial_params(&AerialForm { area: 1, ext: f.ll.clone(), ..AerialForm::default() }).is_err());
     }
 
     #[test]
