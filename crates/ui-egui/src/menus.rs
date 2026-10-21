@@ -432,10 +432,6 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             }
             Ok(Value::Null)
         }
-        "aerial" | "aerialimage" | "onlineimage" | "satellite" if params.is_null() && app.session.state().is_ok() => {
-            app.ui.dialog = Some("aerial".into());
-            Ok(Value::Null)
-        }
         "roadprofile" | "profile" | "verticalcurves" | "vcurve" | "gradeline" if params.is_null() && app.session.state().is_ok() => {
             app.ui.dialog = Some("roadprofile".into());
             Ok(Value::Null)

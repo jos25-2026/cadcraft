@@ -117,19 +117,14 @@ fn default_fetcher() -> Option<Arc<dyn TileFetcher>> {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
-        CommandSpec::new("aerial", "Aerial Image...", run_aerial)
-            .alias(&["aerialimage", "onlineimage", "satellite"])
-            .menu(&["Insert", "Aerial Image..."])
-            .params(
-                "{source?: \"eox-s2\" (worldwide, 10 m) | \"usgs-imagery\" (United States, under 1 m), crs?: \"UTM 47N\" | \"EPSG:32647\" | \"EPSG:3857\" \
+    vec![CommandSpec::new("aerial", "Aerial Image...", run_aerial).alias(&["aerialimage", "onlineimage", "satellite"]).params(
+        "{source?: \"eox-s2\" (worldwide, 10 m) | \"usgs-imagery\" (United States, under 1 m), crs?: \"UTM 47N\" | \"EPSG:32647\" | \"EPSG:3857\" \
                  (default: the drawing's, else the UTM zone of the area), extent?: [minX, minY, maxX, maxY] in that system (default: the drawing), \
                  lonLat?: [west, south, east, north] degrees (instead of extent), resolution?: metres per pixel (default: the best the source has, \
                  within 4096 pixels), path?: where to save the PNG (default: beside the drawing, else the temporary folder), \
                  attribution?: true (draw the credit under the picture), layer?: \"AERIAL\"} \
                  → {path, worldFile, crs, epsg, source, zoom, size, resolution, extent, tiles, missingTiles, attribution, licence, handle}",
-            ),
-    ]
+    )]
 }
 
 // ---- Web Mercator pixels ----

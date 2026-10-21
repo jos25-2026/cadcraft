@@ -44,7 +44,6 @@ pub const DRAFTING: &[(&str, &[Tool], &[Tool])] = &[
         "Survey",
         &[
             (Icon::OrthoImage, "ui.imageattach", "Insert Ortho Image"),
-            (Icon::Aerial, "aerial", "Aerial Image from the Web"),
             (Icon::ImportPoints, "importpoints", "Import Survey Points"),
             (Icon::Contour, "contour", "Contours"),
             (Icon::Earthwork, "earthwork", "Earthwork Volumes"),

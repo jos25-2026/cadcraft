@@ -1459,34 +1459,4 @@
 	Maximum superelevation (%)	Найбільший віраж (%)
 	Side friction	Коефіцієнт поперечного зчеплення
 	Give superelevation rows or a design speed, not both.	Вкажіть або рядки віражу, або розрахункову швидкість, але не обидва.
-	Aerial Image	Аерофотознімок
 	Aerial Image...	Аерофотознімок...
-	Image source	Джерело зображення
-	Covers	Покриття
-	Licence	Ліцензія
-	Drawing coordinates	Координати креслення
-	Zone	Зона
-	The drawing (a little larger)	Креслення (трохи більша)
-	A box in the drawing's coordinates	Рамка в координатах креслення
-	A longitude and latitude box	Рамка за довготою й широтою
-	Min easting	Мін. схід
-	Min northing	Мін. північ
-	Max easting	Макс. схід
-	Max northing	Макс. північ
-	West (longitude)	Захід (довгота)
-	South (latitude)	Південь (широта)
-	East (longitude)	Схід (довгота)
-	North (latitude)	Північ (широта)
-	Zone of this box	Зона цієї рамки
-	Metres per pixel	Метрів на піксель
-	the best the source has	найкраща в джерелі
-	Save as	Зберегти як
-	beside the drawing	поруч із кресленням
-	Write the image credit under the picture	Підписати авторство зображення під знімком
-	Needs an internet connection and may take a few seconds. The picture is saved as a PNG with a world file.	Потрібне підключення до інтернету, може тривати кілька секунд. Знімок зберігається як PNG зі світовим файлом.
-	Choose an image source.	Оберіть джерело зображення.
-	four numbers: min x, min y, max x, max y	чотири числа: мін. x, мін. y, макс. x, макс. y
-	the minimum is below the maximum	мінімум має бути меншим за максимум
-	Area (easting and northing)	Ділянка (схід і північ)
-	Area (longitude and latitude)	Ділянка (довгота й широта)
-	Aerial Image from the Web	Аерофотознімок з інтернету
